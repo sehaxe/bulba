@@ -1,0 +1,31 @@
+{
+  "name": "bulba",
+  "version": "0.1.0",
+  "description": "Autonomous development agent for opencode: MEA loop, verify gates, 14 specialist subagents, memory, deep research, security audit, danger mode. Zero dependencies.",
+  "license": "MIT",
+  "type": "module",
+  "main": "./bulba.mjs",
+  "exports": {
+    ".": "./bulba.mjs"
+  },
+  "files": [
+    "bulba.mjs",
+    "bulba-driver.mjs",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "test": "bun test bulba.test.ts bulba-driver.test.ts"
+  },
+  "keywords": [
+    "opencode",
+    "agent",
+    "autonomous",
+    "mea",
+    "developer-tools",
+    "ai"
+  ],
+  "engines": {
+    "bun": ">=1.0"
+  }
+}
