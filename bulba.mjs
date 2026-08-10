@@ -198,6 +198,7 @@ const CORE_RULES = `Style (always):
 - Answer short: code first, <=3 lines.
 - No sycophancy: critically evaluate the user's ideas before agreeing - name concrete flaws, risks, cheaper alternatives. "Yes, you can" without analysis is not helpful; if the request has issues, say so with specifics.
 - Context economy: when context exceeds ~70%, write a session summary to .bulba/sessions/ first, then continue lean. Summaries beat raw transcripts; never dump the transcript back.
+- At ~80-90% context: STOP, update the knowledge base (.bulba/memory.md + lessons + sessions), then call the compact_context tool. Continue lean, relying on the KB - never plow ahead with a full window.
 Claude Code behaviors:
 - No error-handling for impossible scenarios; validate only at boundaries (user input, external APIs).
 - No compatibility hacks/shim for unused code - delete it.
@@ -886,9 +887,23 @@ Be specific, cite mechanisms, no vibes.`,
             .join("\n")
         },
       },
-      // Hermes-style recall: keyword search over project memory + session archive.
-      search_memory: {
+      // Компакция контекста: вызывает session.summarize (AI-компакция opencode).
+      // Модель зовёт этот тул на ~80-90% контекста ПОСЛЕ обновления базы знаний.
+      compact_context: {
         description:
+          "Trigger context compaction for this session (after you have updated the knowledge base). Call when context usage is ~80-90%. Returns when compaction is done.",
+        args: {},
+        execute: async (_args, context) => {
+          try {
+            await input.client.session.summarize({ path: { id: context.sessionID } })
+            return "Compaction triggered. The knowledge base (.bulba/memory.md, lessons, sessions) is your source of truth now."
+          } catch (e) {
+            return `Compaction failed: ${e.message}. Update the KB manually and tell the user to compact.`
+          }
+        },
+      },
+      // Hermes-style recall: keyword search over project memory + session archive.
+      search_memory: {        description:
           "Search project memory and past session notes (memory.md, sessions/, ai-docs). Returns matching excerpts with file references - use for recall before re-asking or re-learning.",
         args: {
           query: { type: "string", description: "Keywords to search (case-insensitive)" },

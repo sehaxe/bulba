@@ -49,6 +49,7 @@ function plugin(overrides: Record<string, unknown> = {}) {
             prompts.push({ sessionID: value.path.sessionID, prompt: value.body.prompt })
           },
           todo: async () => ({ data: todoStub }),
+          summarize: async () => ({ data: { ok: true } }),
           postSessionIdPermissionsPermissionId: async (value: {
             path: { permissionID: string }
             body: { reply: string }
@@ -723,6 +724,41 @@ test("compaction triggers a knowledge base update", async () => {
   // один раз на сессию
   await (p as any).event?.({ event: { id: "1", type: "session.compacted", properties: { sessionID: "s1" } } })
   expect(prompts).toHaveLength(1)
+})
+
+test("compact_context tool triggers session compaction", async () => {
+  let called = false
+  const p = await BulbaPlugin(
+    {
+      client: {
+        session: {
+          prompt: async () => {},
+          todo: async () => ({ data: undefined }),
+          summarize: async () => {
+            called = true
+            return { data: { ok: true } }
+          },
+        },
+      },
+      project: {} as never,
+      directory: dir,
+      worktree: dir,
+      experimental_workspace: {} as never,
+      serverUrl: new URL("http://127.0.0.1:1"),
+      $: null as never,
+    },
+    { stateDir: dir },
+  )
+  const out = await (p as any).tool.compact_context.execute({}, { sessionID: "s1" })
+  expect(called).toBe(true)
+  expect(out).toContain("Compaction triggered")
+})
+
+test("core doctrine mentions the 80-90% KB-first compaction rule", async () => {
+  const p = await plugin()
+  const output: { system: string[] } = { system: [] }
+  await (p as any)["experimental.chat.system.transform"]({}, output)
+  expect(output.system.join("\n")).toContain("compact_context")
 })
 
 test("no goal → no nagging", async () => {
