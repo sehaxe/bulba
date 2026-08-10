@@ -224,12 +224,13 @@ test("synthetic idle from session.status triggers the enforcer", async () => {
   expect(prompts[0].prompt).toContain("[Bulba Enforcer")
 })
 
-test("no nagging right after compaction", async () => {
+test("no nagging right after compaction (only the KB update)", async () => {
   writeFileSync(join(dir, "goal.md"), "# Goal: fix login\n")
   const p = await plugin()
   await (p as any).event?.({ event: { id: "1", type: "session.compacted", properties: { sessionID: "s1" } } })
   await (p as any).event?.({ event: { id: "1", type: "session.idle", properties: { sessionID: "s1" } } })
-  expect(prompts).toHaveLength(0) // гейт после компакта
+  expect(prompts).toHaveLength(1) // KB-апдейт, но не enforcer-нудж
+  expect(prompts[0].prompt).toContain("knowledge base")
 })
 
 test("config hook gitignores the state dir", async () => {
@@ -692,6 +693,35 @@ test("auto-summarize fires on idle without active work", async () => {
   expect(prompts).toHaveLength(1)
   expect(prompts[0].prompt).toContain("Auto-summarize this session")
   await (p as any).event?.(ev("s1")) // один раз на сессию
+  expect(prompts).toHaveLength(1)
+})
+
+test("MEA blocks direct code edits during an active plan, allows state files", async () => {
+  const state = join(dir, ".bulba")
+  mkdirSync(state)
+  writeFileSync(join(state, "plan.md"), "# Plan: app\nSTATUS: IN_PROGRESS\n## Tasks\n- [ ] 1. x\n")
+  const p = await plugin({ stateDir: state, directory: dir })
+  await expect(
+    (p as any)["tool.execute.before"]({ tool: "edit" }, { args: { filePath: join(dir, "src", "a.rs"), newString: "x" } }),
+  ).rejects.toThrow("You are the manager")
+  // state-файлы менеджеру можно
+  await expect(
+    (p as any)["tool.execute.before"]({ tool: "edit" }, { args: { filePath: join(state, "plan.md"), newString: "- [x]" } }),
+  ).resolves.toBeUndefined()
+  // без активного плана правки разрешены
+  rmSync(join(state, "plan.md"))
+  await expect(
+    (p as any)["tool.execute.before"]({ tool: "edit" }, { args: { filePath: join(dir, "a.rs"), newString: "x" } }),
+  ).resolves.toBeUndefined()
+})
+
+test("compaction triggers a knowledge base update", async () => {
+  const p = await plugin()
+  await (p as any).event?.({ event: { id: "1", type: "session.compacted", properties: { sessionID: "s1" } } })
+  expect(prompts).toHaveLength(1)
+  expect(prompts[0].prompt).toContain("update the knowledge base")
+  // один раз на сессию
+  await (p as any).event?.({ event: { id: "1", type: "session.compacted", properties: { sessionID: "s1" } } })
   expect(prompts).toHaveLength(1)
 })
 

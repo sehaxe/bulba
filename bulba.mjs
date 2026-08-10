@@ -50,6 +50,7 @@ const DEFAULT_OPTIONS = {
   autoSummarizeEvery: 20, // авто-саммари сессии каждые N idle без активной работы (0 = off)
   dangerMode: false, // DANGER: sudo через SUDO_ASKPASS (пароль невидим модели), с правилами самопроверки
   defaultAgent: false, // делать bulba дефолтным primary-агентом (для публикации: false - не захватывать чужой дефолт)
+  meaEditBlock: true, // активный план: прямые правки кода запрещены (менеджер делегирует bulba-implementer)
 }
 
 // DANGER-правила: sudo доступен, но глупость - нет.
@@ -294,6 +295,7 @@ export async function BulbaPlugin(input, options = {}) {
   const compactedAt = new Map() // sessionID -> ms компакта (гейт после компакта)
   const memoryCompacted = new Map() // sessionID -> нудж компакции памяти отправлен
   const summarized = new Map() // sessionID -> авто-саммари отправлено
+  const kbUpdated = new Map() // sessionID -> KB-апдейт после компакта отправлен
   const rulesCache = new Map() // sessionID -> Map(path, sig) — уже дописанные AGENTS.md
 
   // Ближайший AGENTS.md/CLAUDE.md к файлу (вверх по дереву).
@@ -409,6 +411,7 @@ export async function BulbaPlugin(input, options = {}) {
     develop: {
       description: "Dev loop: plan -> questions -> tasks (subagents) -> commits -> adversarial review -> verify gate -> report",
       template: `DEVELOP: $ARGUMENTS
+YOU ARE THE MANAGER in a Manage-Execute-Audit loop (arXiv:2608.01964). This is the ONLY way to work: you maintain state and decide; you NEVER implement and NEVER review yourself. Every task goes: bulba-implementer (fresh context) -> bulba-reviewer audit (fresh context, read-only, runs tests) -> tick on verified facts. Direct file edits during an active plan are blocked by the harness - delegate, do not edit.
 P1 PLAN (read-only): git status/log --oneline -15; no graphify-out/? -> map the subsystem into ${dir}/explore.md - use a read-only explore subagent (task tool, "explore") for unfamiliar code, otherwise map directly (never explore+edit in one context). New/empty project (no commits, little code): skip the map, plan the scaffolding instead (structure, deps, first runnable slice) and confirm stack/commit style in P2. INTAKE first: if the project name is unknown - ask it; if the stack is unknown (new/empty project) - ask it (web framework, backend, db, build tools); ask for the brief description and scope. Multi-feature task: write ${dir}/features.json - every feature as {"description", "steps": [...], "passes": false} (JSON: the gate checks ALL passes:true before DONE; never delete features to pass). New/empty project: also write init.sh (how to run the app/tests) + commit it. Write ${dir}/plan.md with STATUS: AWAITING_APPROVAL (goal, success criteria, tasks, how success is measured) - do NOT start executing:
 ${PLAN_TEMPLATE}
 P2 ASK (<=${cfg.maxQuestions} via question tool): ambiguous scope, boundaries, what NOT to do, preferences. Record answers in plan.md. After the plan is complete: present it to the user and WAIT - no execution until the user says "начинай" or runs /go (which flips STATUS to IN_PROGRESS).
@@ -991,7 +994,7 @@ Be specific, cite mechanisms, no vibes.`,
         .map((f) => `- line ~${f.line}: "${f.text}" (${f.why})`)
         .join("\n")}\nFix them or justify.`
     },
-    // strict: исполнение через драйвер, эта сессия - план и одобрение
+    // MEA: активный план - менеджер не редактирует код, только state-файлы.
     "tool.execute.before": async (input, output) => {
       if (cfg.strictMode) {
         const { goalActive, planActive } = activeWork()
@@ -1003,6 +1006,20 @@ Be specific, cite mechanisms, no vibes.`,
           }
           if (input.tool === "bash" && PY_WRITE_RE.test(String(output.args?.command ?? ""))) {
             throw new Error("[Bulba strict mode] no file edits from this session - run the driver.")
+          }
+        }
+      }
+      if (cfg.meaEditBlock && (input.tool === "edit" || input.tool === "write" || input.tool === "apply_patch" || input.tool === "multiedit")) {
+        const { planActive, goalActive } = activeWork()
+        if (planActive || goalActive) {
+          const file = String(output.args?.filePath ?? output.args?.path ?? "")
+          const rel = file.replaceAll("\\", "/")
+          const stateRel = dir.replaceAll("\\", "/")
+          // state-файлы (plan/goal/memory/...) менеджер редактирует; код - нет.
+          if (!rel.includes(stateRel) && !/plan\.md$|goal\.md$|memory\.md$|lessons\.md$|verify\.md$|features\.json$|questions\.md$/.test(rel)) {
+            throw new Error(
+              "[Bulba MEA] You are the manager - you do NOT edit code directly. Delegate to bulba-implementer (task tool) and await its summary; then bulba-reviewer audits it.",
+            )
           }
         }
       }
@@ -1043,9 +1060,22 @@ Be specific, cite mechanisms, no vibes.`,
         }
         return
       }
-      // Компакт: запомнить момент, не дёргать агента сразу после.
+      // Компакт: запомнить момент + сразу обновить базу знаний (память/уроки/сессии),
+      // чтобы сжатый контекст опирался на KB, а не на потерянные детали.
       if (event.type === "session.compacted") {
         compactedAt.set(sessionID, Date.now())
+        if (!kbUpdated.has(sessionID)) {
+          kbUpdated.set(sessionID, true)
+          await input.client.session
+            .prompt({
+              path: { sessionID },
+              body: {
+                prompt:
+                  "[Bulba] Context was compacted. Before continuing, update the knowledge base with everything important from this session (keep it small):\n1. .bulba/memory.md - decisions, gotchas, current state of the work (no duplicates).\n2. .bulba/lessons.md - 1-2 lessons if any.\n3. .bulba/sessions/<today>.md - a dated entry: what was done, key numbers.\nThen continue the work relying on the KB (it is injected each turn).",
+              },
+            })
+            .catch(() => {})
+        }
         return
       }
       // Синтетический idle из session.status (как omo: session-status-normalizer).
