@@ -952,9 +952,14 @@ Be specific, cite mechanisms, no vibes.`,
       } catch {}
     },
     // Memory/goal/rules injected every turn.
+    // Одно system-сообщение: прокси вроде litellm/vLLM отвергают несколько
+    // system-сообщений ("System message must be at the beginning") - дописываем
+    // блок к существующему system, а не пушим отдельным сообщением.
     "experimental.chat.system.transform": async (_input, output) => {
       const block = systemBlock()
-      if (block) output.system.push(block)
+      if (!block) return
+      if (output.system.length > 0) output.system[0] += `\n\n${block}`
+      else output.system.push(block)
     },
     // AGENTS.md-правила + активная работа: прямо в результаты тулов (как omo, без roundtrip).
     "tool.execute.after": async (input, output) => {
