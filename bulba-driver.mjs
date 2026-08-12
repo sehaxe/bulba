@@ -157,8 +157,23 @@ function runSession(prompt, role, cwd = project) {
     log(`session (${harnessName}${sandbox === "systemd" ? `, sandbox mem=${memMB}M cpu=${cpuQuota}%` : ""}): ${cmd} ${cmdArgs[0]} "<${prompt.split("\n")[0].slice(0, 80)}...>"`)
     const child = spawn(cmd, cmdArgs, { cwd, env, stdio: ["ignore", "pipe", "pipe"], detached: true })
     let out = ""
-    child.stdout.on("data", (c) => (out += c))
-    child.stderr.on("data", (c) => (out += c))
+    // Live-стрим для наблюдения + персистентный лог сессии.
+    const slog = join(dir, "sessions", `${role ?? "phase"}-${new Date().toISOString().replace(/[:.]/g, "-")}.log`)
+    const logChunk = (c) => {
+      process.stdout.write(c) // видно в TTY: tail -f, watch
+      out += c
+      try {
+        writeFileSync(slog, `${existsSync(slog) ? readFileSync(slog, "utf8") : ""}${c}`)
+      } catch {}
+    }
+    child.stdout.on("data", logChunk)
+    child.stderr.on("data", (c) => {
+      process.stderr.write(c)
+      out += c
+      try {
+        writeFileSync(slog, `${existsSync(slog) ? readFileSync(slog, "utf8") : ""}${c}`)
+      } catch {}
+    })
     const timer = setTimeout(() => {
       killProcessTree(child)
       out += "\n[Bulba driver] session TIMEOUT after " + sessionTimeout + "s - killed"
