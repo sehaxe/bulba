@@ -312,6 +312,33 @@ export async function BulbaPlugin(input, options = {}) {
       return 0
     }
   }
+
+  // Автоопределение окна модели: session.get -> model ref -> provider.list -> limit.context.
+  // Кешируется на сессию; фолбэк - cfg.contextWindowTokens.
+  const windowCache = new Map()
+  async function resolveContextWindow(sessionID) {
+    if (windowCache.has(sessionID)) return windowCache.get(sessionID)
+    let window
+    try {
+      const sres = await input.client.session.get({ path: { id: sessionID } })
+      const model = sres?.data?.model ?? sres?.model
+      const modelID = model?.id
+      const providerID = model?.providerID
+      if (modelID && providerID) {
+        const pres = await input.client.provider.list()
+        const list = pres?.data ?? pres
+        const provider = Array.isArray(list?.all)
+          ? (list.all ?? []).find((p) => p?.id === providerID)
+          : list?.[providerID]
+        const direct = provider?.models?.[modelID]
+        const stripped = provider?.models?.[String(modelID).split("/").pop()]
+        const m = direct ?? stripped
+        if (m?.limit?.context > 0) window = m.limit.context
+      }
+    } catch {}
+    windowCache.set(sessionID, window ?? undefined)
+    return window
+  }
   const lastVerifySig = new Map() // sessionID -> сигнатура последней проваленной верификации
   const verifyFails = new Map() // sessionID -> последовательные фейлы без прогресса
   const memoryCompacted = new Map() // sessionID -> нудж компакции памяти отправлен
@@ -1128,14 +1155,15 @@ Be specific, cite mechanisms, no vibes.`,
       // ПРОГРАММНЫЙ триггер контекста: оцениваем токены по сообщениям, не верим модели.
       if (cfg.contextAutoCompact && !compactPrompted.has(sessionID)) {
         const est = await estimateContextTokens(sessionID)
-        if (est > 0 && est / cfg.contextWindowTokens > cfg.contextCompactPct) {
+        const window = (await resolveContextWindow(sessionID)) ?? cfg.contextWindowTokens
+        if (est > 0 && window > 0 && est / window > cfg.contextCompactPct) {
           compactPrompted.set(sessionID, true)
           await input.client.session
             .prompt({
               path: { sessionID },
               body: {
                 prompt:
-                  "[Bulba] Context is ~" + Math.round((est / cfg.contextWindowTokens) * 100) + "% full (estimated programmatically). Update the knowledge base now, structured as Goal / Decisions / Facts, into .bulba/memory.md + .bulba/lessons.md + .bulba/sessions/<today>.md - then compaction will be triggered automatically.",
+                  "[Bulba] Context is ~" + Math.round((est / window) * 100) + "% full (detected window " + window + " tokens, estimated programmatically). Update the knowledge base now, structured as Goal / Decisions / Facts, into .bulba/memory.md + .bulba/lessons.md + .bulba/sessions/<today>.md - then compaction will be triggered automatically.",
               },
             })
             .catch(() => {})

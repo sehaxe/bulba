@@ -808,6 +808,43 @@ test("programmatic context trigger: KB update + compaction at ~85%", async () =>
   expect(prompts).toHaveLength(2)
 })
 
+test("context window auto-detected from the model catalog", async () => {
+  let messagesData: unknown = []
+  const p = await BulbaPlugin(
+    {
+      client: {
+        session: {
+          prompt: async (v: { body: { prompt: string } }) => prompts.push({ sessionID: "s2", prompt: v.body.prompt }),
+          todo: async () => ({ data: undefined }),
+          summarize: async () => ({ data: { ok: true } }),
+          messages: async () => ({ data: messagesData }),
+          get: async () => ({ data: { model: { id: "lm-studio-1m", providerID: "lmstudio" } } }),
+        },
+        provider: {
+          list: async () => ({
+            data: {
+              all: [{ id: "lmstudio", models: { "lm-studio-1m": { limit: { context: 1_000_000 } } } }],
+            },
+          }),
+        },
+      },
+      project: {} as never,
+      directory: dir,
+      worktree: dir,
+      experimental_workspace: {} as never,
+      serverUrl: new URL("http://127.0.0.1:1"),
+      $: null as never,
+    },
+    { stateDir: dir, contextWindowTokens: 10_000, contextCompactPct: 0.85 },
+  )
+  // 850k токенов текста - над 85% от 1M, но сильно ниже 85% от 10k-фолбэка...
+  // окно определено как 1M: 850k / 1M = 85% - срабатывает
+  messagesData = [{ parts: [{ text: "y".repeat(850_000 * 3.5) }] }]
+  await (p as any).event?.({ event: { id: "1", type: "session.idle", properties: { sessionID: "s2" } } })
+  expect(prompts).toHaveLength(1)
+  expect(prompts[0].prompt).toContain("detected window 1000000")
+})
+
 test("no goal → no nagging", async () => {
   const p = await plugin()
   await (p as any).event?.({ event: { id: "1", type: "session.idle", properties: { sessionID: "s1" } } })
