@@ -838,8 +838,8 @@ test("context window auto-detected from the model catalog", async () => {
     { stateDir: dir, contextWindowTokens: 10_000, contextCompactPct: 0.85 },
   )
   // 850k токенов текста - над 85% от 1M, но сильно ниже 85% от 10k-фолбэка...
-  // окно определено как 1M: 850k / 1M = 85% - срабатывает
-  messagesData = [{ parts: [{ text: "y".repeat(850_000 * 3.5) }] }]
+  // окно определено как 1M: 900k / 1M = 90% > 85% - срабатывает
+  messagesData = [{ parts: [{ text: "y".repeat(900_000 * 3.5) }] }]
   await (p as any).event?.({ event: { id: "1", type: "session.idle", properties: { sessionID: "s2" } } })
   expect(prompts).toHaveLength(1)
   expect(prompts[0].prompt).toContain("detected window 1000000")
