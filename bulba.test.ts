@@ -84,7 +84,7 @@ test("config hook injects commands", async () => {
   const config: Record<string, unknown> = {}
   await p.config?.(config as never)
   expect(Object.keys(config.command ?? {})).toEqual([
-    "away", "docs", "graph", "develop", "plan", "publish", "goal", "verify", "audit", "study", "research", "skill", "test_ui", "design", "orchestrate", "simplify", "security_review", "ci", "overhaul", "go", "critique", "retro", "danger", "usage",
+    "away", "docs", "graph", "develop", "plan", "publish", "goal", "verify", "audit", "study", "research", "skill", "test_ui", "design", "orchestrate", "simplify", "security_review", "ci", "overhaul", "go", "critique", "retro", "danger", "status", "usage",
   ])
   expect((config.command as any).develop.template).toContain("MEA LOOP")
   expect((config.command as any).develop.template).toContain("bulba-implementer")

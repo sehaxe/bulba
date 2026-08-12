@@ -674,6 +674,13 @@ Verdict: proceed / proceed with changes / rethink. Be specific, no praise, no he
 2. Verify: run "SUDO_ASKPASS=~/.bulba/.sudo-askpass sudo -A true". If it fails - tell the user to fix the file, don't guess.
 3. Then proceed with the task using SUDO_ASKPASS=~/.bulba/.sudo-askpass sudo -A <cmd> for root commands, following the DANGER rules in context: safety check before every dangerous command, reversible changes, verify the system state after.`,
     },
+    status: {
+      description: "Native status: plan/goal state, last audits, stall info - is work stuck or progressing",
+      template: `STATUS: report the current work state natively (no external tools). $ARGUMENTS
+1. Read ${dir}/plan.md and ${dir}/goal.md: STATUS, open tasks, ## Review entries (last audit verdicts).
+2. Read ${dir}/driver.log tail if it exists (driver state) and ${dir}/sessions/ (recent session logs).
+3. Answer in chat: what is in progress, the last audit verdict, whether anything is stalled (no progress across rounds) and what the next step is. Short: 5-8 lines.`,
+    },
     usage: {
       description: "Session cost/context report + compaction advice",
       template: `USAGE: report on this session's token/cost economy.
