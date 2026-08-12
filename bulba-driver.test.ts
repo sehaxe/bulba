@@ -14,7 +14,7 @@ beforeEach(() => {
   writeFileSync(
     fakeBin,
     `#!/bin/bash
-echo "$*" >> "${project}-calls.txt"
+echo "ROLE=\${BULBA_ROLE:-none} $*" >> "${project}-calls.txt"
 if [[ "$*" == *"IMPLEMENT PHASE"* ]]; then
   mkdir -p "${project}/.bulba"
   printf '# Plan: test task\\nSTATUS: DONE\\n## Tasks\\n- [ ] 1. task one\\n## Review\\n- r1: a.rs:1 x\\n- r2: b.rs:2 y\\n' > "${project}/.bulba/plan.md"
@@ -29,7 +29,7 @@ if [[ "$*" == *"VERIFY PHASE"* ]]; then
 fi
 exit 0`,
   )
-  writeFileSync(fakeBin, `#!/bin/bash\necho "$*" >> "${project}-calls.txt"\nif [[ "$*" == *"IMPLEMENT PHASE"* ]]; then\n  mkdir -p "${project}/.bulba"\n  printf '# Plan: test task\\nSTATUS: DONE\\n## Tasks\\n- [ ] 1. task one\\n## Review\\n- r1: a.rs:1 x\\n- r2: b.rs:2 y\\n' > "${project}/.bulba/plan.md"\nfi\nif [[ "$*" == *"AUDIT PHASE"* ]]; then\n  echo "Status: complete"\n  echo "Integrity: clean"\n  echo "Contract: aligned"\nfi\nif [[ "$*" == *"VERIFY PHASE"* ]]; then\n  touch "${project}/.bulba/verify.md"\nfi\nexit 0\n`)
+  writeFileSync(fakeBin, `#!/bin/bash\necho "ROLE=\${BULBA_ROLE:-none} $*" >> "${project}-calls.txt"\nif [[ "$*" == *"IMPLEMENT PHASE"* ]]; then\n  mkdir -p "${project}/.bulba"\n  printf '# Plan: test task\\nSTATUS: DONE\\n## Tasks\\n- [ ] 1. task one\\n## Review\\n- r1: a.rs:1 x\\n- r2: b.rs:2 y\\n' > "${project}/.bulba/plan.md"\nfi\nif [[ "$*" == *"AUDIT PHASE"* ]]; then\n  echo "Status: complete"\n  echo "Integrity: clean"\n  echo "Contract: aligned"\nfi\nif [[ "$*" == *"VERIFY PHASE"* ]]; then\n  touch "${project}/.bulba/verify.md"\nfi\nexit 0\n`)
 })
 afterEach(() => rmSync(project, { recursive: true, force: true }))
 
@@ -44,9 +44,9 @@ test("driver runs plan -> implement -> audit -> review -> verify -> report", asy
   expect(callsText).toContain("AUDIT PHASE")
   expect(callsText).toContain("REVIEW PHASE")
   expect(callsText).toContain("VERIFY PHASE")
-  // ролевые агенты: структурный read-only аудитор + имплементер
-  expect(callsText).toContain("--agent bulba-reviewer")
-  expect(callsText).toContain("--agent bulba-implementer")
+  // роли через env: аудитор read-only, имплементер - экзекутор
+  expect(callsText).toContain("ROLE=implementer")
+  expect(callsText).toContain("ROLE=auditor")
   // менеджер тикнул задачу по вердикту аудитора
   const plan = readFileSync(join(project, ".bulba", "plan.md"), "utf8")
   expect(plan).toContain("- [x] (audited)")

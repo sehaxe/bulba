@@ -388,6 +388,14 @@ export async function BulbaPlugin(input, options = {}) {
 
   function systemBlock() {
     const parts = []
+    // Ролевые сессии драйвера: минимум правил + роль, без менеджер-доктрин.
+    const role = process.env.BULBA_ROLE
+    if (role) {
+      if (role === "implementer") parts.push("### Role: implementer (driver session)\nYou are the EXECUTOR: implement the assigned task, test it, commit it. Edits are allowed here. Do not review - the auditor does that.")
+      if (role === "auditor") parts.push("### Role: auditor (driver session)\nYou are the READ-ONLY auditor: verify from the environment, structured verdict (Status/Integrity/Contract). Edits are blocked.")
+      if (cfg.rules) parts.push(CORE_RULES)
+      return parts.length ? parts.join("\n\n") : undefined
+    }
     const index = fileText(dir, join(cfg.docsDir, "INDEX.md"))
     if (index) {
       const capped = index.length > cfg.indexMaxBytes ? `${index.slice(0, cfg.indexMaxBytes)}\n... (truncated, see ${cfg.docsDir}/INDEX.md)` : index
@@ -1070,7 +1078,25 @@ Be specific, cite mechanisms, no vibes.`,
         .join("\n")}\nFix them or justify.`
     },
     // MEA: активный план - менеджер не редактирует код, только state-файлы.
+    // Роль сессии из env (драйвер): implementer - может править, auditor - структурный read-only.
     "tool.execute.before": async (input, output) => {
+      const role = process.env.BULBA_ROLE
+      if (role === "auditor" && (input.tool === "edit" || input.tool === "write" || input.tool === "apply_patch" || input.tool === "multiedit")) {
+        throw new Error("[Bulba auditor] read-only session - you audit, you do NOT edit. Report findings with the structured verdict.")
+      }
+      if (role === "auditor" && input.tool === "bash" && PY_WRITE_RE.test(String(output.args?.command ?? ""))) {
+        throw new Error("[Bulba auditor] read-only session - no file edits.")
+      }
+      if (role === "implementer") {
+        // имплементер - экзекутор, правки разрешены
+        if (!cfg.blockPythonEdits || input.tool !== "bash") return
+        if (PY_WRITE_RE.test(String(output.args?.command ?? ""))) {
+          throw new Error(
+            "[Bulba] python/shell file editing is blocked - use the edit/multiedit tools (the harness enforcement can't see python edits).",
+          )
+        }
+        return
+      }
       if (cfg.strictMode) {
         const { goalActive, planActive } = activeWork()
         if (goalActive || planActive) {
@@ -1110,6 +1136,8 @@ Be specific, cite mechanisms, no vibes.`,
     // On completion: verify the work actually happened (git clean, checklist, artifacts),
     // then one-time consolidation nudge while context is fresh.
     event: async ({ event }) => {
+      // Ролевые сессии драйвера: энфорсер и гейты не нужны - драйвер сам цикл.
+      if (process.env.BULBA_ROLE) return
       const sessionID = event.properties?.sessionID
       if (!sessionID) return
       // AWAY: авто-ответы на permission-запросы (работа - allow, outward - reject).

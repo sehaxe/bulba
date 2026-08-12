@@ -136,9 +136,16 @@ function planDone() {
   return /STATUS:\s*DONE/i.test(text)
 }
 
-function runSession(prompt, agent, cwd = project) {
+// Роли через env, а не --agent: opencode run --agent не принимает субагентов
+// (откат на дефолт), поэтому драйвер помечает сессию через BULBA_ROLE -
+// плагин в этой сессии переключает поведение: implementer может править,
+// auditor - структурный read-only, manager (интерактив) - MEA-блок.
+function runSession(prompt, role, cwd = project) {
   return new Promise((resolve) => {
-    let { cmd, args: cmdArgs } = harness(opencodeBin, prompt, useRoles ? agent : undefined)
+    let { cmd, args: cmdArgs } = harness(opencodeBin, prompt, false)
+    const env = { ...process.env }
+    if (role) env.BULBA_ROLE = role
+    else delete env.BULBA_ROLE
     // Песочница: systemd-run --scope c лимитами. Убьёт сессию при превышении памяти,
     // scope убирается сам (cgroups) - авто-очистка.
     if (sandbox === "systemd") {
@@ -148,7 +155,7 @@ function runSession(prompt, agent, cwd = project) {
       ;({ cmd, args: cmdArgs } = wrapBwrap(cwd, cmd, cmdArgs))
     }
     log(`session (${harnessName}${sandbox === "systemd" ? `, sandbox mem=${memMB}M cpu=${cpuQuota}%` : ""}): ${cmd} ${cmdArgs[0]} "<${prompt.split("\n")[0].slice(0, 80)}...>"`)
-    const child = spawn(cmd, cmdArgs, { cwd, stdio: ["ignore", "pipe", "pipe"], detached: true })
+    const child = spawn(cmd, cmdArgs, { cwd, env, stdio: ["ignore", "pipe", "pipe"], detached: true })
     let out = ""
     child.stdout.on("data", (c) => (out += c))
     child.stderr.on("data", (c) => (out += c))
@@ -235,9 +242,9 @@ async function parallelPool(round) {
           if (existsSync(questionsFile)) writeFileSync(join(wt, ".bulba", "questions.md"), readFileSync(questionsFile, "utf8"))
           const prompt = `IMPLEMENT PHASE (driver, pool round ${round}, worker ${w}): YOUR TASK ONLY:\n${task.raw}\n${PHASES.implement(round).split("\n").slice(1).join("\n")}`
           const before = workspaceFingerprintOf(wt)
-          await runSession(prompt, "bulba-implementer", wt)
+          await runSession(prompt, "implementer", wt)
           const mutated = workspaceFingerprintOf(wt) !== before
-          const audit = await runSession(PHASES.audit(round), "bulba-reviewer", wt)
+          const audit = await runSession(PHASES.audit(round), "auditor", wt)
           const verdict = mutated ? "MUTATED" : parseAuditVerdict(audit)
           log(`worker ${w} task #${idx + 1} verdict: ${verdict}`)
           if (verdict !== "VERIFIED") {
@@ -432,11 +439,11 @@ async function main() {
       if (parallel > 1 && /- \[ \]/.test(existsSync(planFile) ? readFileSync(planFile, "utf8") : "")) {
         await parallelPool(round)
       } else {
-        await runSession(PHASES.implement(round), "bulba-implementer")
+        await runSession(PHASES.implement(round), "implementer")
       }
       // MEA: read-only аудитор верифицирует состояние из окружения.
       const beforeAudit = workspaceFingerprint()
-      const audit = await runSession(PHASES.audit(round), "bulba-reviewer")
+      const audit = await runSession(PHASES.audit(round), "auditor")
       const mutated = workspaceFingerprint() !== beforeAudit
       const verdict = mutated ? "MUTATED" : parseAuditVerdict(audit)
       log(`audit verdict: ${verdict}${mutated ? " (workspace mutated by auditor - fail-closed)" : ""}`)
