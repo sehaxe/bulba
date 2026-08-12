@@ -51,6 +51,9 @@ const DEFAULT_OPTIONS = {
   dangerMode: false, // DANGER: sudo через SUDO_ASKPASS (пароль невидим модели), с правилами самопроверки
   defaultAgent: false, // делать bulba дефолтным primary-агентом (для публикации: false - не захватывать чужой дефолт)
   meaEditBlock: true, // активный план: прямые правки кода запрещены (менеджер делегирует bulba-implementer)
+  contextAutoCompact: true, // программный триггер: ~85% контекста -> KB + компакция (не на совести модели)
+  contextWindowTokens: 128_000, // окно модели для оценки
+  contextCompactPct: 0.85,
 }
 
 // DANGER-правила: sudo доступен, но глупость - нет.
@@ -186,28 +189,23 @@ const SKILL_INDEX = {
 // Always-on core rules: ponytail ladder + anti-slop + readiness doctrine.
 // Compact on purpose — injected every turn.
 const CORE_RULES = `Style (always):
-- Minimal scope, maximal craftsmanship: the ladder decides WHAT to build (not needed -> existing -> stdlib -> platform -> dep -> one line -> minimum), never HOW well - ship the best-quality implementation, not a rushed shortcut.
+- Minimal scope, max craftsmanship: ladder picks WHAT (YAGNI -> existing -> stdlib -> platform -> dep -> one line -> minimum), never HOW - ship the best-quality implementation, not a shortcut.
 - Never cut: validation, data-loss handling, security, a11y.
-- Optimized: low memory/CPU, no waste, no premature micro-opt; measure when it matters.
+- Optimized: low mem/CPU, no waste, no premature micro-opt; measure when it matters.
+- "Done" = you ran full tests: green, typecheck/lint clean. "Smoke" isn't done. Failing test = bug in code - fix code, never skip/delete tests.
+- Complex logic leaves one runnable check. Paragraph comment justifying workaround = code wrong, fix it.
 - No slop: no obvious comments, no em-dashes/filler, no "for later" boilerplate.
-- "Done" = you ran tests: full green, typecheck/lint clean. "Smoke" isn't done.
-- Never skip/delete tests to pass; failing test = bug in code, fix code.
-- Complex logic (branch/loop/parser/money) leaves one runnable check.
-- Paragraph comment justifying workaround = code wrong, fix it.
 - UI: follow .ai-docs/DESIGN.md (create first if missing). Beautiful: hierarchy, contrast, spacing, restraint.
 - Answer short: code first, <=3 lines.
-- No sycophancy: critically evaluate the user's ideas before agreeing - name concrete flaws, risks, cheaper alternatives. "Yes, you can" without analysis is not helpful; if the request has issues, say so with specifics.
-- Context economy: when context exceeds ~70%, write a session summary to .bulba/sessions/ first, then continue lean. Summaries beat raw transcripts; never dump the transcript back.
-- At ~80-90% context: STOP, update the knowledge base (.bulba/memory.md + lessons + sessions), then call the compact_context tool. Continue lean, relying on the KB - never plow ahead with a full window.
-Claude Code behaviors:
-- No error-handling for impossible scenarios; validate only at boundaries (user input, external APIs).
-- No compatibility hacks/shim for unused code - delete it.
-- Reversible local actions: free. Irreversible/outward (push, delete, PR, force): ask first. Before git checkout/reset/clean: git status.
-- Report honestly: show failed test output, name skipped steps, no hedging when done.
-- Brief updates while working; don't narrate internal reasoning. Code refs as file:line.
-- Tool economy: surgical tools first - edit over write (never rewrite whole files for small changes), Read with offset/limit for big files, grep/glob over full reads, dedicated tools (read/edit/grep) over shell (cat/sed/echo). Reuse earlier tool results; batch independent calls in parallel; don't re-read unchanged files.
-- Never edit text files via python/bash (open()/write_text/sed -i) - the harness enforcement (no-slop, guard, rules) only sees the edit/write tools; use edit/multiedit. No bash/python grep - use the grep tool.
-- Active work: keep progress visible - todo tool or the active plan's checklist; tick after each step.`
+- No sycophancy: name concrete flaws/risks/cheaper alternatives before agreeing; if the request has issues, say so.
+- Context: >70% -> write .bulba/sessions/ summary, continue lean. 80-90% -> update KB (memory/lessons/sessions) then compact_context tool. Summaries > transcripts; never dump the transcript back.
+- Validate only at boundaries (user input, external APIs); no error-handling for impossible cases.
+- No compatibility hacks for unused code - delete it.
+- Reversible local actions: free. Outward (push, delete, PR, force): ask. Before git checkout/reset/clean: git status.
+- Report honestly: show failed test output, name skipped steps, no hedging. Brief updates, no internal narration. Refs as file:line.
+- Tool economy: edit over write, Read with offset/limit, grep/glob over full reads, dedicated tools over shell (cat/sed/echo), reuse results, parallel independent calls, don't re-read unchanged files.
+- Never edit text files via python/bash (open()/sed -i) - enforcement sees only edit/write. No shell grep.
+- Active work: keep progress visible (todo tool or plan checklist), tick after each step.`
 
 // Only when a goal/plan is active.
 const ACTIVE_DOCTRINE = `Active work:
@@ -294,6 +292,26 @@ export async function BulbaPlugin(input, options = {}) {
   const lastSig = new Map() // sessionID -> last progress signature
   const stopped = new Set() // sessionID -> stall-stop (не дёргаем, пока нет прогресса)
   const compactedAt = new Map() // sessionID -> ms компакта (гейт после компакта)
+  const compactPrompted = new Map() // sessionID -> авто-компакция на ~85% отправлена (сброс по session.compacted)
+
+  // Программная оценка токенов контекста: суммарная длина текста сообщений / 3.5.
+  async function estimateContextTokens(sessionID) {
+    try {
+      const res = await input.client.session.messages({ path: { id: sessionID } })
+      const msgs = res?.data ?? res ?? []
+      if (!Array.isArray(msgs)) return 0
+      let chars = 0
+      for (const m of msgs) {
+        for (const p of m?.parts ?? []) {
+          const t = p?.text
+          if (typeof t === "string") chars += t.length
+        }
+      }
+      return Math.ceil(chars / 3.5)
+    } catch {
+      return 0
+    }
+  }
   const lastVerifySig = new Map() // sessionID -> сигнатура последней проваленной верификации
   const verifyFails = new Map() // sessionID -> последовательные фейлы без прогресса
   const memoryCompacted = new Map() // sessionID -> нудж компакции памяти отправлен
@@ -1083,6 +1101,7 @@ Be specific, cite mechanisms, no vibes.`,
       // чтобы сжатый контекст опирался на KB, а не на потерянные детали.
       if (event.type === "session.compacted") {
         compactedAt.set(sessionID, Date.now())
+        compactPrompted.delete(sessionID) // следующий цикл роста контекста снова сработает
         if (!kbUpdated.has(sessionID)) {
           kbUpdated.set(sessionID, true)
           await input.client.session
@@ -1106,6 +1125,24 @@ Be specific, cite mechanisms, no vibes.`,
       // Гейт после компакта: дать агенту пересобрать контекст.
       const now = Date.now()
       if (compactedAt.has(sessionID) && now - compactedAt.get(sessionID) < cfg.compactionGuardMs) return
+      // ПРОГРАММНЫЙ триггер контекста: оцениваем токены по сообщениям, не верим модели.
+      if (cfg.contextAutoCompact && !compactPrompted.has(sessionID)) {
+        const est = await estimateContextTokens(sessionID)
+        if (est > 0 && est / cfg.contextWindowTokens > cfg.contextCompactPct) {
+          compactPrompted.set(sessionID, true)
+          await input.client.session
+            .prompt({
+              path: { sessionID },
+              body: {
+                prompt:
+                  "[Bulba] Context is ~" + Math.round((est / cfg.contextWindowTokens) * 100) + "% full (estimated programmatically). Update the knowledge base now, structured as Goal / Decisions / Facts, into .bulba/memory.md + .bulba/lessons.md + .bulba/sessions/<today>.md - then compaction will be triggered automatically.",
+              },
+            })
+            .catch(() => {})
+          await input.client.session.summarize({ path: { id: sessionID } }).catch(() => {})
+          return
+        }
+      }
       const { goal, plan, goalActive, planActive } = activeWork()
       const driven = rounds.has(sessionID)
 

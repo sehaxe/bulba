@@ -50,6 +50,7 @@ function plugin(overrides: Record<string, unknown> = {}) {
           },
           todo: async () => ({ data: todoStub }),
           summarize: async () => ({ data: { ok: true } }),
+          messages: async () => ({ data: [] }),
           postSessionIdPermissionsPermissionId: async (value: {
             path: { permissionID: string }
             body: { reply: string }
@@ -259,8 +260,8 @@ test("core doctrine is always injected, even without plan", async () => {
   const output: { system: string[] } = { system: [] }
   await (p as any)["experimental.chat.system.transform"]({}, output)
   const joined = output.system.join("\n")
-  expect(joined).toContain('"Done" = you ran tests')
-  expect(joined).toContain("Never skip/delete tests to pass")
+  expect(joined).toContain('"Done" = you ran full tests')
+  expect(joined).toContain("never skip/delete tests")
   expect(joined).toContain("Paragraph comment")
   expect(joined).toContain("No slop")
   expect(joined).toContain("todo tool")
@@ -759,6 +760,52 @@ test("core doctrine mentions the 80-90% KB-first compaction rule", async () => {
   const output: { system: string[] } = { system: [] }
   await (p as any)["experimental.chat.system.transform"]({}, output)
   expect(output.system.join("\n")).toContain("compact_context")
+})
+
+test("programmatic context trigger: KB update + compaction at ~85%", async () => {
+  const big = "x".repeat(40_000) // ~11k токенов при окне 128k - мало
+  let messagesData: unknown = []
+  const p = await BulbaPlugin(
+    {
+      client: {
+        session: {
+          prompt: async (v: { body: { prompt: string } }) => prompts.push({ sessionID: "s1", prompt: v.body.prompt }),
+          todo: async () => ({ data: undefined }),
+          summarize: async () => {
+            summarizedCalls++
+            return { data: { ok: true } }
+          },
+          messages: async () => ({ data: messagesData }),
+        },
+      },
+      project: {} as never,
+      directory: dir,
+      worktree: dir,
+      experimental_workspace: {} as never,
+      serverUrl: new URL("http://127.0.0.1:1"),
+      $: null as never,
+    },
+    { stateDir: dir, contextWindowTokens: 10_000, contextCompactPct: 0.85 },
+  )
+  let summarizedCalls = 0
+  // ниже порога: 40k символов / 3.5 = 11.4k > 8.5k - над порогом. Проверяем обе ветки:
+  messagesData = [{ parts: [{ text: "y".repeat(3_000) }] }] // ~857 токенов < 8.5k
+  await (p as any).event?.({ event: { id: "1", type: "session.idle", properties: { sessionID: "s1" } } })
+  expect(prompts).toHaveLength(0) // ниже порога - ничего
+
+  messagesData = [{ parts: [{ text: "y".repeat(40_000) }] }] // ~11.4k > 8.5k
+  await (p as any).event?.({ event: { id: "1", type: "session.idle", properties: { sessionID: "s1" } } })
+  expect(prompts).toHaveLength(1)
+  expect(prompts[0].prompt).toContain("Context is ~")
+  expect(summarizedCalls).toBe(1) // компакция вызвана программно
+
+  // повторно не срабатывает до session.compacted
+  await (p as any).event?.({ event: { id: "1", type: "session.idle", properties: { sessionID: "s1" } } })
+  expect(prompts).toHaveLength(1)
+  // после компакта сброс - следующий цикл снова сработает
+  await (p as any).event?.({ event: { id: "1", type: "session.compacted", properties: { sessionID: "s1" } } })
+  await (p as any).event?.({ event: { id: "1", type: "session.idle", properties: { sessionID: "s1" } } })
+  expect(prompts).toHaveLength(2)
 })
 
 test("no goal → no nagging", async () => {
