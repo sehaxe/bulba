@@ -293,6 +293,7 @@ export async function BulbaPlugin(input, options = {}) {
   const stopped = new Set() // sessionID -> stall-stop (не дёргаем, пока нет прогресса)
   const compactedAt = new Map() // sessionID -> ms компакта (гейт после компакта)
   const compactPrompted = new Map() // sessionID -> авто-компакция на ~85% отправлена (сброс по session.compacted)
+  const delegation = new Map() // sessionID -> {implementer: n, reviewer: n} - наблюдаемые вызовы цикла
 
   // Программная оценка токенов контекста: суммарная длина текста сообщений / 3.5.
   async function estimateContextTokens(sessionID) {
@@ -1008,6 +1009,16 @@ Be specific, cite mechanisms, no vibes.`,
     // AGENTS.md-правила + активная работа: прямо в результаты тулов (как omo, без roundtrip).
     "tool.execute.after": async (input, output) => {
       const { tool, sessionID, args } = input
+      // Наблюдение цикла MEA: реальные вызовы task-тула с ролевыми субагентами.
+      if (tool === "task" && sessionID) {
+        const kind = String(args?.subagent_type ?? "")
+        if (kind === "bulba-implementer" || kind === "bulba-reviewer") {
+          const d = delegation.get(sessionID) ?? { implementer: 0, reviewer: 0 }
+          if (kind === "bulba-implementer") d.implementer++
+          else d.reviewer++
+          delegation.set(sessionID, d)
+        }
+      }
       const { goalActive, planActive } = activeWork()
       // Правила в точке действия: компактный блок в edit/write при активной работе.
       if (cfg.rulesInject && (tool === "edit" || tool === "write") && (goalActive || planActive)) {
@@ -1224,6 +1235,18 @@ Be specific, cite mechanisms, no vibes.`,
         }
         const gitDirty = await dirtyWorkingTree(input.directory)
         if (gitDirty) problems.push(`uncommitted changes in git (${gitDirty} file(s))`)
+
+        // Цикл MEA: доказательство делегирования. Драйвер (/orchestrate) - сам по себе цикл.
+        const driverActive = existsSync(join(dir, "driver.json"))
+        if (planText && !driverActive) {
+          const d = delegation.get(sessionID) ?? { implementer: 0, reviewer: 0 }
+          if (d.implementer < 1) {
+            problems.push("no bulba-implementer delegation observed this session - the MEA cycle requires delegating tasks to the implementer")
+          }
+          if (d.reviewer < 1) {
+            problems.push("no bulba-reviewer audit observed this session - the MEA cycle requires auditing before ticking tasks")
+          }
+        }
 
         // Gate-dedup (prime): если воркспейс И набор проблем не менялись с прошлой
         // проваленной верификации - не дёргаем снова, а помечаем заблокированным.

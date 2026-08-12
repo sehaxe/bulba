@@ -375,8 +375,16 @@ test("verify pokes when plan lacks Review section", async () => {
   expect(prompts).toHaveLength(4)
   expect(prompts[3].prompt).toContain("verify.md")
 
-  // fresh verify.md leads to consolidation
+  // verify.md свежий и делегирование доказано - консолидация
   writeFileSync(join(dir, "verify.md"), "bun test: 12 pass, 0 fail\n")
+  await (p as any)["tool.execute.after"](
+    { tool: "task", sessionID: "s1", args: { subagent_type: "bulba-implementer" } },
+    { output: "ok" },
+  )
+  await (p as any)["tool.execute.after"](
+    { tool: "task", sessionID: "s1", args: { subagent_type: "bulba-reviewer" } },
+    { output: "ok" },
+  )
   await (p as any).event?.(ev("s1"))
   expect(prompts).toHaveLength(5)
   expect(prompts[4].prompt).toContain("Consolidate")
@@ -843,6 +851,34 @@ test("context window auto-detected from the model catalog", async () => {
   await (p as any).event?.({ event: { id: "1", type: "session.idle", properties: { sessionID: "s2" } } })
   expect(prompts).toHaveLength(1)
   expect(prompts[0].prompt).toContain("detected window 1000000")
+})
+
+test("MEA gate requires observed delegation (implementer + reviewer)", async () => {
+  const state = join(dir, ".bulba")
+  mkdirSync(state)
+  writeFileSync(join(state, "plan.md"), "# Plan: app\nSTATUS: DONE\n## Tasks\n- [x] 1. x\n## Review\n- r1: a.rs:1 bug\n- r2: b.rs:2 race\n")
+  writeFileSync(join(state, "verify.md"), "bun test: ok\n")
+  const p = await plugin({ stateDir: state, directory: dir })
+  // имитируем работу: nag, чтобы rounds запомнил сессию
+  writeFileSync(join(state, "goal.md"), "# Goal: x\n")
+  await (p as any).event?.({ event: { id: "1", type: "session.idle", properties: { sessionID: "s1" } } })
+  rmSync(join(state, "goal.md"))
+  await (p as any).event?.({ event: { id: "1", type: "session.idle", properties: { sessionID: "s1" } } })
+  expect(prompts[1].prompt).toContain("no bulba-implementer delegation")
+  expect(prompts[1].prompt).toContain("no bulba-reviewer audit")
+
+  // после реальных вызовов task-тула - гейт проходит дальше
+  const out: { output: string } = { output: "ok" }
+  await (p as any)["tool.execute.after"](
+    { tool: "task", sessionID: "s1", args: { subagent_type: "bulba-implementer" } },
+    out,
+  )
+  await (p as any)["tool.execute.after"](
+    { tool: "task", sessionID: "s1", args: { subagent_type: "bulba-reviewer" } },
+    out,
+  )
+  await (p as any).event?.({ event: { id: "1", type: "session.idle", properties: { sessionID: "s1" } } })
+  expect(prompts[2].prompt).not.toContain("delegation")
 })
 
 test("no goal → no nagging", async () => {
