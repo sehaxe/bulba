@@ -294,6 +294,8 @@ export async function BulbaPlugin(input, options = {}) {
   const lastSig = new Map() // sessionID -> last progress signature
   const stopped = new Set() // sessionID -> stall-stop (не дёргаем, пока нет прогресса)
   const compactedAt = new Map() // sessionID -> ms компакта (гейт после компакта)
+  const lastVerifySig = new Map() // sessionID -> сигнатура последней проваленной верификации
+  const verifyFails = new Map() // sessionID -> последовательные фейлы без прогресса
   const memoryCompacted = new Map() // sessionID -> нудж компакции памяти отправлен
   const summarized = new Map() // sessionID -> авто-саммари отправлено
   const kbUpdated = new Map() // sessionID -> KB-апдейт после компакта отправлен
@@ -799,10 +801,12 @@ Workflow:
    - software/tools: official docs, GitHub activity, benchmarks, release notes.
    - health/medicine: PubMed, WHO, reputable clinical sources and guidelines - NEVER random blogs or forums as evidence.
    - general: SearXNG (search_web) + official/primary sources.
-2. For every candidate: read the ACTUAL source - methods, metrics, findings (not just titles). Check recency and credibility: who publishes, last update, citations, real usage.
+   DECOMPOSE (STORM): split the core question into 3-5 concrete search queries covering different angles (background, state of the art, alternatives, controversy) - one query per angle, then run each.
+2. For every candidate: read the ACTUAL source - methods, metrics, findings (not just titles). Check recency and credibility: who publishes, last update, citations, real usage. MERGE snippets from the same URL across queries (dedup by URL).
 3. Examine AT LEAST 5 candidates before any verdict. Never recommend the first result; explicitly list rejected candidates and why.
-4. Output a comparison table: candidate | source/date | key facts or metrics | credibility | effort to adopt/verify.
-5. STRICT EVIDENCE SEPARATION - the user must never doubt what is real:
+4. Output a comparison table: candidate | source/date | key facts or metrics | credibility | effort to adopt/verify. For each column pick the TOP-K most relevant citations - not everything collected.
+5. HONESTY BRANCH: if a candidate or a fact cannot be verified from the sources - say "I cannot answer based on available information" and mark it SPECULATION, never fabricate a citation.
+6. STRICT EVIDENCE SEPARATION - the user must never doubt what is real:
    - Every factual claim carries its source reference right next to it.
    - Speculation is allowed when evidence is missing, but ONLY explicitly marked: "SPECULATION: no direct benchmark A vs B exists; based on [X] and [Y] I assume Z". Never present an assumption as a fact.
    - Both in the report and in the reply: two explicit sections - "VERIFIED (sourced)" and "SPECULATION (my inference)".
@@ -1086,7 +1090,7 @@ Be specific, cite mechanisms, no vibes.`,
               path: { sessionID },
               body: {
                 prompt:
-                  "[Bulba] Context was compacted. Before continuing, update the knowledge base with everything important from this session (keep it small):\n1. .bulba/memory.md - decisions, gotchas, current state of the work (no duplicates).\n2. .bulba/lessons.md - 1-2 lessons if any.\n3. .bulba/sessions/<today>.md - a dated entry: what was done, key numbers.\nThen continue the work relying on the KB (it is injected each turn).",
+                  "[Bulba] Context was compacted. Before continuing, update the knowledge base with everything important from this session, structured as:\nGoal: what this session is trying to achieve (1 line)\nDecisions: what was decided and why (bullet list, no duplicates)\nFacts: what was learned - gotchas, numbers, findings (bullet list)\nWrite it to:\n1. .bulba/memory.md (the structured block above, merged without duplicates)\n2. .bulba/lessons.md - 1-2 lessons if any\n3. .bulba/sessions/<today>.md - a dated entry: what was done, key numbers.\nThen continue the work relying on the KB (it is injected each turn).",
               },
             })
             .catch(() => {})
@@ -1155,6 +1159,35 @@ Be specific, cite mechanisms, no vibes.`,
         }
         const gitDirty = await dirtyWorkingTree(input.directory)
         if (gitDirty) problems.push(`uncommitted changes in git (${gitDirty} file(s))`)
+
+        // Gate-dedup (prime): если воркспейс И набор проблем не менялись с прошлой
+        // проваленной верификации - не дёргаем снова, а помечаем заблокированным.
+        if (problems.length) {
+          const sig = `${await progressSignature()}|${problems.join(";")}`
+          if (sig === lastVerifySig.get(sessionID)) {
+            const fails = (verifyFails.get(sessionID) ?? 0) + 1
+            verifyFails.set(sessionID, fails)
+            if (fails >= 2) {
+              rounds.delete(sessionID)
+              saveState()
+              await input.client.session
+                .prompt({
+                  path: { sessionID },
+                  body: {
+                    prompt:
+                      "[Bulba] Verification failed twice with no changes in between - the work is blocked and needs the user: here is what's failing and why. Don't keep spinning; ask the user to intervene.",
+                  },
+                })
+                .catch(() => {})
+              return
+            }
+          } else {
+            lastVerifySig.set(sessionID, sig)
+            verifyFails.set(sessionID, 1)
+          }
+        } else {
+          verifyFails.set(sessionID, 0)
+        }
 
         if (problems.length) {
           // Verification failed: poke the model — it claimed done, it's not.
