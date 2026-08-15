@@ -65,16 +65,30 @@ const DANGER_RULES = `DANGER MODE (sudo available via SUDO_ASKPASS): you have ro
 - Check twice, act once. If unsure about a sudo command - ask the user.`
 
 // No-slop: хеуристики на коммент-строках добавленного текста (как omo comment-checker,
-// но без бинарника). Консервативно — без false-positive на TODO/осмысленных комментариях.
+// но без бинарника). Консервативно - без false-positive на TODO/осмысленных комментариях.
 const SLOP_PATTERNS = [
   { re: /[—–‐]/u, why: "em/long dash in comment" },
   {
     re: /\b(note that|keep in mind|please note|it's? (worth|important) to (note|mention)|important to mention|as you know|of course|obviously|simply put)\b/i,
     why: "filler phrase",
   },
-  { re: /^\s*\/\/[^\n]*[()=;{}\[\]<>]\s*$/, why: "commented-out code" },
-  { re: /^\s*\/\/\s*[a-z_][a-z0-9_]*\s*:\s*$/, why: "placeholder comment" },
+  { re: /[=;{}]\s*$/, why: "commented-out code" },
+  { re: /^[a-z_][a-z0-9_]*\s*:\s*$/, why: "placeholder comment" },
 ]
+
+// Извлекает текст комментария (без префикса) или null, если строка - не комментарий.
+// Поддержка // # /* */ * (Python/shell/YAML #, но не shebang #!, не Rust-атрибут #[,
+// не C-препроцессор #include/#define).
+function commentContent(trimmed) {
+  if (trimmed.startsWith("//")) return trimmed.slice(2)
+  if (trimmed.startsWith("/*")) return trimmed.slice(2).replace(/\*\/\s*$/, "")
+  if (trimmed.startsWith("*") && !trimmed.startsWith("*/")) return trimmed.slice(1)
+  if (trimmed.startsWith("#") && !trimmed.startsWith("#!") && !trimmed.startsWith("#[")) {
+    if (/^#\s*(include|define|ifdef|ifndef|endif|if|elif|else|pragma|error|warning|undef|line|region|endregion)\b/.test(trimmed)) return null
+    return trimmed.slice(1)
+  }
+  return null
+}
 
 // Python/shell-правки текстовых файлов: блокируются детерминированно.
 const PY_WRITE_RE =
@@ -113,25 +127,27 @@ function checkSlop(added) {
   if (typeof added !== "string") return findings
   const lines = added.split("\n")
   for (let i = 0; i < lines.length; i++) {
-    const line = lines[i]
-    const trimmed = line.trim()
-    if (!trimmed.startsWith("//")) continue
+    const trimmed = lines[i].trim()
+    const comment = commentContent(trimmed)
+    if (comment == null) continue
     for (const { re, why } of SLOP_PATTERNS) {
-      if (re.test(trimmed)) {
+      if (re.test(comment)) {
         findings.push({ line: i + 1, text: trimmed.slice(0, 80), why })
         break
       }
     }
     // Комментарий, повторяющий ближайший код (объясняет очевидное).
+    // \p{L}\p{N} вместо [a-z0-9]: иначе кириллица стирается и ASCII-идентификатор
+    // в русском комментарии (modelID) ложно матчится с кодом.
     const STOP = new Set(["the", "a", "an", "of", "to", "for", "and", "with", "on", "in", "it", "its", "this", "that", "is", "are"])
     const norm = (s) =>
       s
         .toLowerCase()
-        .replace(/[^a-z0-9]/g, " ")
+        .replace(/[^\p{L}\p{N}]/gu, " ")
         .split(" ")
         .filter((w) => w && !STOP.has(w))
         .join("")
-    const c = norm(trimmed.replace(/^\/\//, ""))
+    const c = norm(comment)
     if (c.length > 6) {
       const next = norm(lines.slice(i + 1, i + 3).join(" "))
       if (next && next.includes(c)) {
@@ -281,10 +297,19 @@ export async function BulbaPlugin(input, options = {}) {
   const rounds = new Map(Object.entries(persisted.rounds ?? {})) // sessionID -> count
   const consolidated = new Set(persisted.consolidated ?? []) // sessionID -> nudge sent
   const roles = new Map(Object.entries(persisted.roles ?? {})) // sessionID -> role (переживает resume в TUI)
+  const delegation = new Map(Object.entries(persisted.delegation ?? {})) // sessionID -> {implementer, reviewer} (переживает рестарт)
   const saveState = () => {
     try {
       mkdirSync(dir, { recursive: true })
-      writeFileSync(stateFile, JSON.stringify({ rounds: Object.fromEntries(rounds), consolidated: [...consolidated], roles: Object.fromEntries(roles) }))
+      writeFileSync(
+        stateFile,
+        JSON.stringify({
+          rounds: Object.fromEntries(rounds),
+          consolidated: [...consolidated],
+          roles: Object.fromEntries(roles),
+          delegation: Object.fromEntries(delegation),
+        }),
+      )
     } catch {}
   }
   // Роль сессии: env (драйвер спавнит) -> персист по sessionID (resume/ручной запуск в TUI).
@@ -322,7 +347,6 @@ export async function BulbaPlugin(input, options = {}) {
   const stopped = new Set() // sessionID -> stall-stop (не дёргаем, пока нет прогресса)
   const compactedAt = new Map() // sessionID -> ms компакта (гейт после компакта)
   const compactPrompted = new Map() // sessionID -> авто-компакция на ~85% отправлена (сброс по session.compacted)
-  const delegation = new Map() // sessionID -> {implementer: n, reviewer: n} - наблюдаемые вызовы цикла
 
   // Программная оценка токенов контекста: суммарная длина текста сообщений / 3.5.
   async function estimateContextTokens(sessionID) {
@@ -344,15 +368,15 @@ export async function BulbaPlugin(input, options = {}) {
   }
 
   // Автоопределение окна модели: session.get -> model ref -> provider.list -> limit.context.
-  // Кешируется на сессию; фолбэк - cfg.contextWindowTokens.
-  const windowCache = new Map()
+  // Кешируется на modelID (не на сессию) - смена модели инвалидирует сама.
+  const windowCache = new Map() // modelID -> window
   async function resolveContextWindow(sessionID) {
-    if (windowCache.has(sessionID)) return windowCache.get(sessionID)
-    let window
     try {
       const sres = await input.client.session.get({ path: { id: sessionID } })
       const model = sres?.data?.model ?? sres?.model
       const modelID = model?.id
+      if (modelID && windowCache.has(modelID)) return windowCache.get(modelID)
+      let window
       const providerID = model?.providerID
       if (modelID && providerID) {
         const pres = await input.client.provider.list()
@@ -365,9 +389,11 @@ export async function BulbaPlugin(input, options = {}) {
         const m = direct ?? stripped
         if (m?.limit?.context > 0) window = m.limit.context
       }
-    } catch {}
-    windowCache.set(sessionID, window ?? undefined)
-    return window
+      if (modelID) windowCache.set(modelID, window ?? undefined)
+      return window
+    } catch {
+      return undefined
+    }
   }
   const lastVerifySig = new Map() // sessionID -> сигнатура последней проваленной верификации
   const verifyFails = new Map() // sessionID -> последовательные фейлы без прогресса
@@ -407,12 +433,25 @@ export async function BulbaPlugin(input, options = {}) {
     return `${git}|${stamp("plan.md")}|${stamp("memory.md")}`
   }
 
+  // План/goal читаются на каждый тул-вызов; кешируем по mtime (состояние проекта
+  // общее для всех сессий, так что один кеш на инстанс корректен).
+  let awCache
   function activeWork() {
+    const stamp = (name) => {
+      try {
+        return statSync(join(dir, name)).mtimeMs
+      } catch {
+        return -1
+      }
+    }
+    const planM = stamp("plan.md")
+    const goalM = stamp("goal.md")
+    if (awCache && awCache.planM === planM && awCache.goalM === goalM) return awCache.result
     const goal = readGoal(dir)
     const plan = readPlan(dir)
-    const goalActive = goal && !goal.done
-    const planActive = plan && !plan.done && !plan.pending
-    return { goal, plan, goalActive, planActive }
+    const result = { goal, plan, goalActive: goal && !goal.done, planActive: plan && !plan.done && !plan.pending }
+    awCache = { planM, goalM, result }
+    return result
   }
 
   function systemBlock(sessionID) {
@@ -1041,9 +1080,16 @@ Be specific, cite mechanisms, no vibes.`,
       if (!/я уйду|ухожу|отойду|пока меня нет|не мешаю|до моего возвращения|work until i return|while i'?m away|when i'?m gone|away mode/i.test(text)) return
       const active = activeWork()
       if (active.goalActive) return // уже есть цель
+      // Убрать фразу-триггер из текста цели (не хранить "я уйду" в goal.md).
+      // \b не работает для кириллицы (не \w в JS) - матчим как подстроки + хвост-пунктуацию.
+      const goalText = text
+        .replace(/(?:я уйду|ухожу|отойду|пока меня нет|не мешаю|до моего возвращения)[,;:.\s]*/gi, "")
+        .replace(/(?:work until i return|while i'?m away|when i'?m gone|away mode)[,;:.\s]*/gi, "")
+        .replace(/^[,;:.\s]+|[,;:.\s]+$/g, "")
+        .trim()
       try {
         mkdirSync(dir, { recursive: true })
-        writeFileSync(join(dir, "goal.md"), `# Goal: ${text.trim()}\nMODE: AWAY\n`)
+        writeFileSync(join(dir, "goal.md"), `# Goal: ${goalText || text.trim()}\nMODE: AWAY\n`)
       } catch {}
     },
     // Memory/goal/rules injected every turn.
@@ -1065,6 +1111,7 @@ Be specific, cite mechanisms, no vibes.`,
           if (kind === "bulba-implementer") d.implementer++
           else d.reviewer++
           delegation.set(sessionID, d)
+          saveState()
         }
       }
       const { goalActive, planActive } = activeWork()

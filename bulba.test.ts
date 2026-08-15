@@ -577,6 +577,51 @@ test("chat.message triggers AWAY goal deterministically", async () => {
   const goal = readFileSync(join(dir, "goal.md"), "utf8")
   expect(goal).toContain("MODE: AWAY")
   expect(goal).toContain("оптимизацией")
+  expect(goal).not.toContain("я уйду") // триггер вычищен из текста цели
+})
+
+test("no-slop catches # comments (Python/shell) and ignores preprocessor/attributes", async () => {
+  const p = await plugin()
+  const out1: { output: string } = { output: "ok" }
+  await (p as any)["tool.execute.after"](
+    { tool: "edit", sessionID: "s1", args: { filePath: "a.py", newString: "# note that we cache — important\n" } },
+    out1,
+  )
+  expect(out1.output).toContain("[No-slop]")
+  // #include (препроцессор) и #[derive] (Rust-атрибут) - не комментарии, не флагаются
+  const out2: { output: string } = { output: "ok" }
+  await (p as any)["tool.execute.after"](
+    { tool: "edit", sessionID: "s1", args: { filePath: "a.c", newString: "#include <stdio.h>\n#[derive(Clone)]\n" } },
+    out2,
+  )
+  expect(out2.output).toBe("ok")
+})
+
+test("no-slop does not false-flag Russian comment with ASCII identifier", async () => {
+  const p = await plugin()
+  const out: { output: string } = { output: "ok" }
+  await (p as any)["tool.execute.after"](
+    { tool: "edit", sessionID: "s1", args: { filePath: "a.rs", newString: "// Кешируется на modelID (не на сессию) - смена модели инвалидирует\nconst windowCache = new Map() // modelID -> window\n" } },
+    out,
+  )
+  expect(out.output).toBe("ok")
+})
+
+test("delegation proof survives plugin restart (persisted state)", async () => {
+  const state = join(dir, ".bulba")
+  mkdirSync(state)
+  const p1 = await plugin({ stateDir: state, directory: dir })
+  // менеджер делегировал implementer через task-тул
+  await (p1 as any)["tool.execute.after"]({ tool: "task", sessionID: "ses_mgr", args: { subagent_type: "bulba-implementer" } }, { output: "" })
+  let persisted = JSON.parse(readFileSync(join(state, ".enforcer.json"), "utf8"))
+  expect(persisted.delegation?.ses_mgr?.implementer).toBe(1)
+  // "рестарт" плагина (новый инстанс, то же stateDir) - делегирует reviewer
+  const p2 = await plugin({ stateDir: state, directory: dir })
+  await (p2 as any)["tool.execute.after"]({ tool: "task", sessionID: "ses_mgr", args: { subagent_type: "bulba-reviewer" } }, { output: "" })
+  persisted = JSON.parse(readFileSync(join(state, ".enforcer.json"), "utf8"))
+  // implementer из p1 сохранён, reviewer из p2 добавлен - гейт не зафлагает
+  expect(persisted.delegation?.ses_mgr?.implementer).toBe(1)
+  expect(persisted.delegation?.ses_mgr?.reviewer).toBe(1)
 })
 
 test("action rules appended to edit results during active work", async () => {
