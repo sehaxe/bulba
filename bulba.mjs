@@ -1119,54 +1119,48 @@ Be specific, cite mechanisms, no vibes.`,
     // Роль сессии из env (драйвер): implementer - может править, auditor - структурный read-only.
     "tool.execute.before": async (input, output) => {
       const role = resolveRole(input.sessionID)
-      if (role === "auditor" && (input.tool === "edit" || input.tool === "write" || input.tool === "apply_patch" || input.tool === "multiedit")) {
-        throw new Error("[Bulba auditor] read-only session - you audit, you do NOT edit. Report findings with the structured verdict.")
-      }
-      if (role === "auditor" && input.tool === "bash" && PY_WRITE_RE.test(String(output.args?.command ?? ""))) {
-        throw new Error("[Bulba auditor] read-only session - no file edits.")
-      }
-      if (role === "implementer") {
-        // имплементер - экзекутор, правки разрешены
-        if (!cfg.blockPythonEdits || input.tool !== "bash") return
-        if (PY_WRITE_RE.test(String(output.args?.command ?? ""))) {
-          throw new Error(
-            "[Bulba] python/shell file editing is blocked - use the edit/multiedit tools (the harness enforcement can't see python edits).",
-          )
+      // Аудитор (роль драйвера): структурный read-only - ни правок, ни python-writes.
+      if (role === "auditor") {
+        if (input.tool === "edit" || input.tool === "write" || input.tool === "apply_patch" || input.tool === "multiedit") {
+          throw new Error("[Bulba auditor] read-only session - you audit, you do NOT edit. Report findings with the structured verdict.")
         }
-        return
-      }
-      // Субагенты (task-тул): implementer/verifier/researcher/... обязаны править код.
-      // MEA/strict-блоки - только для менеджера (primary-сессия без роли).
-      if (await isSubagent(input.sessionID)) return
-      if (cfg.strictMode) {
-        const { goalActive, planActive } = activeWork()
-        if (goalActive || planActive) {
-          if (input.tool === "edit" || input.tool === "write" || input.tool === "apply_patch" || input.tool === "multiedit") {
-            throw new Error(
-              "[Bulba strict mode] execution runs in the driver (bulba-driver.mjs via /orchestrate), not in this session. Your job here: plan, ask questions, review progress, approve. No direct edits while a goal/plan is active.",
-            )
-          }
-          if (input.tool === "bash" && PY_WRITE_RE.test(String(output.args?.command ?? ""))) {
-            throw new Error("[Bulba strict mode] no file edits from this session - run the driver.")
-          }
+        if (input.tool === "bash" && PY_WRITE_RE.test(String(output.args?.command ?? ""))) {
+          throw new Error("[Bulba auditor] read-only session - no file edits.")
         }
       }
-      if (cfg.meaEditBlock && (input.tool === "edit" || input.tool === "write" || input.tool === "apply_patch" || input.tool === "multiedit")) {
-        const { planActive, goalActive } = activeWork()
-        if (planActive || goalActive) {
-          const file = String(output.args?.filePath ?? output.args?.path ?? "")
-          const rel = file.replaceAll("\\", "/")
-          const stateRel = dir.replaceAll("\\", "/")
-          // state-файлы (plan/goal/memory/...) менеджер редактирует; код - нет.
-          if (!rel.includes(stateRel) && !/plan\.md$|goal\.md$|memory\.md$|lessons\.md$|verify\.md$|features\.json$|questions\.md$/.test(rel)) {
-            throw new Error(
-              "[Bulba MEA] You are the manager - you do NOT edit code directly. Delegate to bulba-implementer (task tool) and await its summary; then bulba-reviewer audits it.",
-            )
+      // MEA/strict-блоки - ТОЛЬКО для менеджера (primary-сессия без роли и без parent).
+      // Субагенты (implementer/verifier/researcher/...) обязаны править код.
+      if (!role && !(await isSubagent(input.sessionID))) {
+        if (cfg.strictMode) {
+          const { goalActive, planActive } = activeWork()
+          if (goalActive || planActive) {
+            if (input.tool === "edit" || input.tool === "write" || input.tool === "apply_patch" || input.tool === "multiedit") {
+              throw new Error(
+                "[Bulba strict mode] execution runs in the driver (bulba-driver.mjs via /orchestrate), not in this session. Your job here: plan, ask questions, review progress, approve. No direct edits while a goal/plan is active.",
+              )
+            }
+            if (input.tool === "bash" && PY_WRITE_RE.test(String(output.args?.command ?? ""))) {
+              throw new Error("[Bulba strict mode] no file edits from this session - run the driver.")
+            }
+          }
+        }
+        if (cfg.meaEditBlock && (input.tool === "edit" || input.tool === "write" || input.tool === "apply_patch" || input.tool === "multiedit")) {
+          const { planActive, goalActive } = activeWork()
+          if (planActive || goalActive) {
+            const file = String(output.args?.filePath ?? output.args?.path ?? "")
+            const rel = file.replaceAll("\\", "/")
+            const stateRel = dir.replaceAll("\\", "/")
+            // state-файлы (plan/goal/memory/...) менеджер редактирует; код - нет.
+            if (!rel.includes(stateRel) && !/plan\.md$|goal\.md$|memory\.md$|lessons\.md$|verify\.md$|features\.json$|questions\.md$/.test(rel)) {
+              throw new Error(
+                "[Bulba MEA] You are the manager - you do NOT edit code directly. Delegate to bulba-implementer (task tool) and await its summary; then bulba-reviewer audits it.",
+              )
+            }
           }
         }
       }
-      if (!cfg.blockPythonEdits || input.tool !== "bash") return
-      if (PY_WRITE_RE.test(String(output.args?.command ?? ""))) {
+      // Python/shell-правки: всегда через edit/multiedit тулы (харнесс не видит python-правки).
+      if (role !== "auditor" && cfg.blockPythonEdits && input.tool === "bash" && PY_WRITE_RE.test(String(output.args?.command ?? ""))) {
         throw new Error(
           "[Bulba] python/shell file editing is blocked - use the edit/multiedit tools (the harness enforcement can't see python edits).",
         )
