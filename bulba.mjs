@@ -108,7 +108,8 @@ function replyPermission(client, sessionID, permissionID, reply, message) {
 }
 
 // Возвращает замечания по добавленному тексту: [{line, text, why}].
-function checkSlop(added) {  const findings = []
+function checkSlop(added) {
+  const findings = []
   if (typeof added !== "string") return findings
   const lines = added.split("\n")
   for (let i = 0; i < lines.length; i++) {
@@ -996,7 +997,8 @@ Be specific, cite mechanisms, no vibes.`,
         },
       },
       // Hermes-style recall: keyword search over project memory + session archive.
-      search_memory: {        description:
+      search_memory: {
+        description:
           "Search project memory and past session notes (memory.md, sessions/, ai-docs). Returns matching excerpts with file references - use for recall before re-asking or re-learning.",
         args: {
           query: { type: "string", description: "Keywords to search (case-insensitive)" },
@@ -1067,8 +1069,11 @@ Be specific, cite mechanisms, no vibes.`,
       }
       const { goalActive, planActive } = activeWork()
       // Правила в точке действия: компактный блок в edit/write при активной работе.
+      // Только менеджеру - субагенту (implementer/verifier) не говорим "делегируй ревью".
       if (cfg.rulesInject && (tool === "edit" || tool === "write") && (goalActive || planActive)) {
-        output.output = `${output.output ?? ""}\n\n[Active work]\n- Tick the plan.md checklist after finishing this task; commit per task (no git add .).\n- Never self-review: delegate the diff to 2 bulba-reviewer subagents.\n- Done = verify gate green (tests, Review >= 2 findings, verify.md).`
+        if (!(await isSubagent(sessionID))) {
+          output.output = `${output.output ?? ""}\n\n[Active work]\n- Tick the plan.md checklist after finishing this task; commit per task (no git add .).\n- Never self-review: delegate the diff to 2 bulba-reviewer subagents.\n- Done = verify gate green (tests, Review >= 2 findings, verify.md).`
+        }
         return
       }
       // Bash-гейт: python/sed-редактирование и grep через shell обходят инфорс - пинок.
