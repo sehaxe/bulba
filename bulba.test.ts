@@ -249,6 +249,15 @@ test("search_web tool queries local SearXNG", async () => {
   expect(out).toContain("Second Result")
 })
 
+test("system.transform merges into the first system message (single-message for litellm/vLLM)", async () => {
+  const p = await plugin()
+  const output: { system: string[] } = { system: ["You are a helpful assistant."] }
+  await (p as any)["experimental.chat.system.transform"]({}, output)
+  expect(output.system).toHaveLength(1)
+  expect(output.system[0]).toContain("You are a helpful assistant.")
+  expect(output.system[0]).toContain('"Done" = you ran full tests')
+})
+
 test("search_web tool fails gracefully when SearXNG is down", async () => {
   const p = await plugin({ searxngUrl: "http://127.0.0.1:1" })
   const out = await (p as any).tool.search_web.execute({ query: "x" }, {})

@@ -1031,7 +1031,10 @@ Be specific, cite mechanisms, no vibes.`,
     // Memory/goal/rules injected every turn.
     "experimental.chat.system.transform": async (input, output) => {
       const block = systemBlock(input?.sessionID)
-      if (block) output.system.push(block)
+      if (!block) return
+      // Одно system-сообщение: litellm/vLLM отвергают несколько ("System message must be at the beginning").
+      if (output.system.length > 0) output.system[0] += `\n\n${block}`
+      else output.system.push(block)
     },
     // AGENTS.md-правила + активная работа: прямо в результаты тулов (как omo, без roundtrip).
     "tool.execute.after": async (input, output) => {
