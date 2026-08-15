@@ -279,11 +279,23 @@ export async function BulbaPlugin(input, options = {}) {
   }
   const rounds = new Map(Object.entries(persisted.rounds ?? {})) // sessionID -> count
   const consolidated = new Set(persisted.consolidated ?? []) // sessionID -> nudge sent
+  const roles = new Map(Object.entries(persisted.roles ?? {})) // sessionID -> role (переживает resume в TUI)
   const saveState = () => {
     try {
       mkdirSync(dir, { recursive: true })
-      writeFileSync(stateFile, JSON.stringify({ rounds: Object.fromEntries(rounds), consolidated: [...consolidated] }))
+      writeFileSync(stateFile, JSON.stringify({ rounds: Object.fromEntries(rounds), consolidated: [...consolidated], roles: Object.fromEntries(roles) }))
     } catch {}
+  }
+  // Роль сессии: env (драйвер спавнит) -> персист по sessionID (resume/ручной запуск в TUI).
+  const resolveRole = (sessionID) => {
+    if (process.env.BULBA_ROLE) {
+      if (sessionID && roles.get(sessionID) !== process.env.BULBA_ROLE) {
+        roles.set(sessionID, process.env.BULBA_ROLE)
+        saveState()
+      }
+      return process.env.BULBA_ROLE
+    }
+    return sessionID ? roles.get(sessionID) : undefined
   }
   const lastIdle = new Map() // in-memory only (debounce resets on restart — fine)
   const idleCount = new Map() // sessionID -> idles without active work
@@ -386,10 +398,10 @@ export async function BulbaPlugin(input, options = {}) {
     return { goal, plan, goalActive, planActive }
   }
 
-  function systemBlock() {
+  function systemBlock(sessionID) {
     const parts = []
     // Ролевые сессии драйвера: минимум правил + роль, без менеджер-доктрин.
-    const role = process.env.BULBA_ROLE
+    const role = resolveRole(sessionID)
     if (role) {
       if (role === "implementer") parts.push("### Role: implementer (driver session)\nYou are the EXECUTOR: implement the assigned task, test it, commit it. Edits are allowed here. Do not review - the auditor does that.")
       if (role === "auditor") parts.push("### Role: auditor (driver session)\nYou are the READ-ONLY auditor: verify from the environment, structured verdict (Status/Integrity/Contract). Edits are blocked.")
@@ -1017,8 +1029,8 @@ Be specific, cite mechanisms, no vibes.`,
       } catch {}
     },
     // Memory/goal/rules injected every turn.
-    "experimental.chat.system.transform": async (_input, output) => {
-      const block = systemBlock()
+    "experimental.chat.system.transform": async (input, output) => {
+      const block = systemBlock(input?.sessionID)
       if (block) output.system.push(block)
     },
     // AGENTS.md-правила + активная работа: прямо в результаты тулов (как omo, без roundtrip).
@@ -1087,7 +1099,7 @@ Be specific, cite mechanisms, no vibes.`,
     // MEA: активный план - менеджер не редактирует код, только state-файлы.
     // Роль сессии из env (драйвер): implementer - может править, auditor - структурный read-only.
     "tool.execute.before": async (input, output) => {
-      const role = process.env.BULBA_ROLE
+      const role = resolveRole(input.sessionID)
       if (role === "auditor" && (input.tool === "edit" || input.tool === "write" || input.tool === "apply_patch" || input.tool === "multiedit")) {
         throw new Error("[Bulba auditor] read-only session - you audit, you do NOT edit. Report findings with the structured verdict.")
       }
@@ -1144,9 +1156,9 @@ Be specific, cite mechanisms, no vibes.`,
     // then one-time consolidation nudge while context is fresh.
     event: async ({ event }) => {
       // Ролевые сессии драйвера: энфорсер и гейты не нужны - драйвер сам цикл.
-      if (process.env.BULBA_ROLE) return
       const sessionID = event.properties?.sessionID
       if (!sessionID) return
+      if (resolveRole(sessionID)) return
       // AWAY: авто-ответы на permission-запросы (работа - allow, outward - reject).
       if (cfg.awayAutoApprove && (event.type === "permission.v2.asked" || event.type === "permission.asked")) {
         const goal = readGoal(dir)
