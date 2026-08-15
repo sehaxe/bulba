@@ -297,6 +297,22 @@ export async function BulbaPlugin(input, options = {}) {
     }
     return sessionID ? roles.get(sessionID) : undefined
   }
+  // Является ли сессия субагентом (parent_id != null): MEA-блок и strict-режим
+  // применяются ТОЛЬКО к менеджеру (primary-сессия). Субагенты (implementer/verifier/
+  // researcher/...) обязаны править код - блок для них это ложный фолс-позитив.
+  const subagentCache = new Map() // sessionID -> bool
+  async function isSubagent(sessionID) {
+    if (!sessionID) return false
+    if (subagentCache.has(sessionID)) return subagentCache.get(sessionID)
+    let sub = false
+    try {
+      const sres = await input.client.session.get({ path: { id: sessionID } })
+      const d = sres?.data ?? sres
+      sub = d?.parentID != null
+    } catch {}
+    subagentCache.set(sessionID, sub)
+    return sub
+  }
   const lastIdle = new Map() // in-memory only (debounce resets on restart — fine)
   const idleCount = new Map() // sessionID -> idles without active work
   const nudged = new Map() // sessionID -> memory nudge sent
@@ -1119,6 +1135,9 @@ Be specific, cite mechanisms, no vibes.`,
         }
         return
       }
+      // Субагенты (task-тул): implementer/verifier/researcher/... обязаны править код.
+      // MEA/strict-блоки - только для менеджера (primary-сессия без роли).
+      if (await isSubagent(input.sessionID)) return
       if (cfg.strictMode) {
         const { goalActive, planActive } = activeWork()
         if (goalActive || planActive) {
@@ -1185,6 +1204,9 @@ Be specific, cite mechanisms, no vibes.`,
         }
         return
       }
+      // Субагенты (task-тул) управляются родителем: энфорсер их не дёргает
+      // (idle-нуджи «continue», verify-гейты и stall - только для менеджера).
+      if (await isSubagent(sessionID)) return
       // Компакт: запомнить момент + сразу обновить базу знаний (память/уроки/сессии),
       // чтобы сжатый контекст опирался на KB, а не на потерянные детали.
       if (event.type === "session.compacted") {

@@ -12,6 +12,7 @@ let dir = ""
 let prompts: { sessionID: string; prompt: string }[] = []
 let todoStub: unknown[] | undefined = undefined
 let permissionReplies: { id: string; reply: string }[] = []
+let sessionGetStub: { parentID?: string | null; agent?: string } = { parentID: null }
 let searxngPort = 0
 let searxngServer: ReturnType<typeof createServer>
 
@@ -51,6 +52,7 @@ function plugin(overrides: Record<string, unknown> = {}) {
           todo: async () => ({ data: todoStub }),
           summarize: async () => ({ data: { ok: true } }),
           messages: async () => ({ data: [] }),
+          get: async () => ({ data: sessionGetStub }),
           postSessionIdPermissionsPermissionId: async (value: {
             path: { permissionID: string }
             body: { reply: string }
@@ -75,6 +77,7 @@ beforeEach(() => {
   prompts = []
   todoStub = undefined
   permissionReplies = []
+  sessionGetStub = { parentID: null }
 })
 
 afterEach(() => rmSync(dir, { recursive: true, force: true }))
@@ -731,6 +734,22 @@ test("MEA blocks direct code edits during an active plan, allows state files", a
   rmSync(join(state, "plan.md"))
   await expect(
     (p as any)["tool.execute.before"]({ tool: "edit" }, { args: { filePath: join(dir, "a.rs"), newString: "x" } }),
+  ).resolves.toBeUndefined()
+})
+
+test("MEA block never applies to subagent sessions (implementer must edit)", async () => {
+  const state = join(dir, ".bulba")
+  mkdirSync(state)
+  writeFileSync(join(state, "plan.md"), "# Plan: app\nSTATUS: IN_PROGRESS\n## Tasks\n- [ ] 1. x\n")
+  const p = await plugin({ stateDir: state, directory: dir })
+  // менеджер (parentID null) - блок работает
+  await expect(
+    (p as any)["tool.execute.before"]({ tool: "edit", sessionID: "ses_mgr" }, { args: { filePath: join(dir, "a.rs") } }),
+  ).rejects.toThrow("You are the manager")
+  // субагент (parentID set) - правки разрешены
+  sessionGetStub = { parentID: "ses_mgr" }
+  await expect(
+    (p as any)["tool.execute.before"]({ tool: "edit", sessionID: "ses_impl" }, { args: { filePath: join(dir, "a.rs") } }),
   ).resolves.toBeUndefined()
 })
 
