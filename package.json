@@ -1,31 +1,14 @@
 {
   "name": "bulba",
-  "version": "0.1.0",
-  "description": "Autonomous development agent for opencode: MEA loop, verify gates, 14 specialist subagents, memory, deep research, security audit, danger mode. Zero dependencies.",
+  "version": "2.0.0",
+  "description": "Bulba - native OpenCode V2 agent setup: 14 agents, 29 commands, 14 skills, always-on ponytail rules. Markdown only, no plugin code.",
   "license": "MIT",
-  "type": "module",
-  "main": "./bulba.mjs",
-  "exports": {
-    ".": "./bulba.mjs"
-  },
-  "files": [
-    "bulba.mjs",
-    "bulba-driver.mjs",
-    "README.md",
-    "LICENSE"
-  ],
-  "scripts": {
-    "test": "bun test bulba.test.ts bulba-driver.test.ts"
-  },
   "keywords": [
     "opencode",
     "agent",
-    "autonomous",
+    "commands",
+    "skills",
     "mea",
-    "developer-tools",
     "ai"
-  ],
-  "engines": {
-    "bun": ">=1.0"
-  }
+  ]
 }

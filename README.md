@@ -1,211 +1,48 @@
 # Bulba
 
-**The autonomous development agent for opencode.** A manager-execute-audit harness that plans with you, delegates to specialist subagents in fresh contexts, verifies every claim from the environment, and never says "done" without proof.
+Native OpenCode V2 setup: agents, commands, skills, always-on rules. Markdown only — zero plugin code (V1 plugins do not run in V2, so the old plugin was removed entirely, nothing ported).
 
-Built on two research foundations — [Anthropic: Effective harnesses for long-running agents](https://www.anthropic.com/engineering/effective-harnesses-for-long-running-agents) and [LongHorizon-Harness (arXiv:2608.01964)](https://arxiv.org/abs/2608.01964) — plus the best practices of oh-my-openagent, Claude Code, Hermes and the Bun-in-Rust rewrite.
+## Layout
 
-- **Zero runtime dependencies** — one plugin file, Node/Bun stdlib only
-- **No telemetry** — everything lives in your `.bulba/` directory, every decision is a readable file
-- **Cross-platform** — Windows / macOS / Linux (sandbox is Linux-only, opt-in)
-- **Model-agnostic** — works with any opencode provider, including local ones (LM Studio, Ollama)
-- **52 tests, CI included**
-
----
-
-## The idea
-
-Most agents are one long context window that rots. Bulba splits the work like a company:
-
-```
-                YOU (approve, steer)
-                        |
-                  ┌─────▼─────┐
-                  │   bulba   │  primary agent: routes, plans, asks, approves
-                  └─────┬─────┘
-      ┌─────────┬───────┼────────┬──────────┐
-      ▼         ▼       ▼        ▼          ▼
-  planner   implementer  reviewer  verifier  researcher ...
-  (read-    (fresh      (fresh    (full     (evidence-
-   only)     context)    context,  tests,    based,
-                        read-only,  typecheck,  5+ candidates,
-                        assumes     lint)     verified vs
-                        wrong)                speculation)
-```
-
-- **Interactive session = the brain**: intake questions → full plan → you approve → the main agent delegates to subagents, each in a **fresh context**, and ticks tasks **only on audited verdicts**.
-- **`bulba-driver.mjs` = the hands**: a headless orchestrator that runs the same loop in isolated sessions and **worktrees**, with parallel workers, task dependencies, resume after crash, timeouts and optional sandboxes.
+| Dir | What |
+|---|---|
+| `agents/` | 14 agents: `bulba` (primary router, default) + 13 subagents — planner, implementer, reviewer, verifier, debugger, benchmarker, paper-explainer, optimizer, webdev, security, skillfinder, researcher, critic |
+| `commands/` | 29 commands: dev loop (`/develop` `/plan` `/go` `/verify` `/publish` `/status` `/goal`), research/docs/quality, tutor `/teach`, ponytail set `/ponytail*` |
+| `skills/` | 14 skills (see Provenance) |
+| `AGENTS.md` | Always-on rules: ponytail (full level) + Bulba core |
 
 ## Install
 
-```bash
-# via npm (once published)
-npm i -g bulba            # or add to your project
+The repo is the source of truth; the global config gets symlinks:
 
-# or from source
-git clone https://github.com/sehaxe/bulba && cd bulba && bun install
+```sh
+ln -s "$PWD/agents"    ~/.config/opencode/agents
+ln -s "$PWD/commands"  ~/.config/opencode/commands
+ln -s "$PWD/skills"    ~/.config/opencode/skills
+ln -s "$PWD/AGENTS.md" ~/.config/opencode/AGENTS.md
 ```
 
-Add to `opencode.json` (global or project):
+Plus `"default_agent": "bulba"` in `~/.config/opencode/opencode.jsonc`. Providers stay unset — pick the model in the TUI.
 
-```json
-{
-  "plugin": [
-    ["bulba", {
-      "driverPath": "/path/to/bulba-driver.mjs",
-      "skillsDir": "/path/to/skills"
-    }]
-  ]
-}
-```
+> Gotcha: a running opencode service rebuilds its agent registry on **config value changes** (or restart), not on plain edits to `agents/*.md` — edited agents show up after the next launch or a config change.
 
-For a local checkout:
+## Key flows
 
-```json
-{ "plugin": [["/path/to/bulba/bulba.mjs", {}]] }
-```
+- `/develop` — Manage-Execute-Audit loop: plan → questions → tasks → subagents → commits → adversarial review → verify gate → report. No push without `/publish`.
+- `/teach <topic>` — tutor mode: loads the `teach` skill (mission-grounded, evidence-based: retrieval, spacing, interleaving), HTML lessons + reference docs, stateful workspace the agent picks.
+- `/away` — work autonomously until the user returns (plain prompt, no permission hacks — V2 allows all by default).
+- `/research` — deep research on the built-in websearch/webfetch, cited report in `.bulba/research/`.
+- `/overhaul`, `/critique`, `/simplify`, `/audit`, `/security-review`, `/graph`, `/test-ui`, `/design` …
+- `/ponytail [lite|full|ultra|off]` — level switch; always-on at **full** via `AGENTS.md`.
 
-Restart opencode, switch to the **Bulba** agent, and just write what you want — Bulba routes the request to the right workflow.
+## Philosophy
 
-> **Minimum opencode version**: some enforcement relies on recent APIs (`session todo`, `run --agent`, background subagents). If a feature is unavailable, Bulba degrades gracefully.
+Trust, not enforcement: **zero deny-rules**. Read-only roles (planner, reviewer, security) are stated in prompts, not permissions. Outward actions (push, PR, delete, creating CI) ask the user. Nothing auto-nags; state lives in `.bulba/` (plan.md, goal.md, memory.md, lessons.md — per-project scratch, gitignored there).
 
-## Quickstart
+## Provenance (skills keep their original IDs)
 
-```
-You:  сделай приложение для подбора комплектующих
-Bulba: (intake) Как назовём? Стек? Какие источники данных? Критерии успеха?
-You:  bulbamarket, bun + React, Onliner API, поиск и сравнение цен
-Bulba: (writes plan.md, STATUS: AWAITING_APPROVAL) Вот план — цели, задачи,
-       как замерим успех. Готов начать?
-You:  начинай
-Bulba: (MEA loop) implementer → reviewer (audits from the environment) →
-       verify gate → task ticked. Commits per task, report at the end.
-```
+- `grilling`, `grill-me`, `teach`, `to-spec`, `diagnosing-bugs`, `writing-for-agents` — [mattpocock/skills](https://github.com/mattpocock/skills)
+- `unslop`, `blast-radius` — [cursor/plugins](https://github.com/cursor/plugins) (pstack)
+- `ponytail`, `ponytail-review`, `ponytail-audit`, `ponytail-gain`, `ponytail-debt`, `ponytail-help` — [DietrichGebert/ponytail](https://github.com/DietrichGebert/ponytail) (ruleset also inlined in `AGENTS.md`)
 
-No commands to memorize — the primary agent routes. But everything is also available explicitly (see [Commands](#commands)).
-
-## How it enforces (not just prompts)
-
-| Mechanism | What it does |
-|---|---|
-| **Verify gate** | "Done" only when: git tree clean, checklist ticked, `## Review` with ≥ 2 findings, `verify.md` newer than the last commit, `features.json` all passing, CI green. The plugin checks these itself and pokes the model if it lied. |
-| **Auditor (MEA)** | A read-only subagent verifies from the environment (runs the tests), returns a structured verdict `Status / Integrity / Contract`, and the manager ticks tasks **only on complete+clean+aligned**. A snapshot guard fail-closes if the auditor mutates anything. |
-| **Todo enforcer** | Reads the session todo list via the API: no list → nudge to create it; incomplete items → nudge with count. |
-| **Guard** | Destructive commands (`git reset --hard`, `rm -rf`, force-push, …) are denied at the permission level. |
-| **No python-editing** | File edits via `open(...,"w")`/`sed -i` are blocked before execution — enforcement hooks only see the edit tools. |
-| **No-slop scanner** | Every edit is scanned deterministically: em-dashes, filler phrases, commented-out code, comments that repeat the code. |
-| **Stall detection** | No progress across N rounds (git HEAD / plan / memory unchanged) → stop nagging, save tokens. |
-| **Intake gate** | No execution before the user approves the plan (`AWAITING_APPROVAL` → `/go`). |
-| **Strict mode** | When active work exists, direct edits are blocked in the interactive session — execution only via the driver. |
-| **AWAY gate** | In AWAY mode the plugin auto-answers permission requests: work allowed, outward actions (push, ssh, external dirs) rejected. |
-| **Danger mode** | `sudo` via `SUDO_ASKPASS` — the password is typed by the user in their own terminal and is **unreadable** to the model (read/bash denied on the askpass file). Safety-check rules before every root command. |
-
-## Agents (14)
-
-| Agent | Role |
-|---|---|
-| **bulba** (primary) | Routes requests, runs the dev loop, the brain of the system |
-| **bulba-planner** | Read-only planning: questions, plan.md, success criteria |
-| **bulba-implementer** | Executes one task: code + test + commit |
-| **bulba-reviewer** | Adversarial auditor: assumes the code is wrong, verifies from the environment, structured verdict |
-| **bulba-verifier** | Runs the full test suite / typecheck / lint until green |
-| **bulba-researcher** | Deep research on **anything**: 5+ candidates, sources next to every fact, `VERIFIED` vs `SPECULATION` split, health guardrails (PubMed/WHO, never blogs) |
-| **bulba-critic** | Hostile review of your ideas: flaws, cheaper alternatives, the experiment that would falsify the verdict |
-| **bulba-debugger** | Evidence-based triage: reproduce → log → hypothesis → bisect → minimal fix |
-| **bulba-benchmarker** | Honest measurements: median + p95, same conditions, no cherry-picking |
-| **bulba-paper-explainer** | A paper down to implementation: method, formulas, hyperparameters, code sketch |
-| **bulba-optimizer** | Max-out optimization, system-aware: profile, one change, re-measure, never overload the machine |
-| **bulba-webdev** | Extracts a reference URL into a DESIGN.md template (light + dark themes) |
-| **bulba-security** | Total audit: code, dependencies, system, config — read-only, exploitability-first, verified vs suspected |
-| **bulba-skillfinder** | Finds an existing skill or drafts a temporary one; **never installs anything from the web without your explicit consent** |
-
-## Commands
-
-| Command | Purpose |
-|---|---|
-| `/develop` | The full loop: intake → plan → MEA execution → verify gate → report |
-| `/away` | Work autonomously until you return (capped, stall-guarded) |
-| `/overhaul` | Autonomous codebase rewrite: architecture first, then slice-by-slice, zero functionality loss (`behavior.json` contract) |
-| `/plan` | Read-only planning only |
-| `/go` | Approve the pending plan and start |
-| `/publish` | Push + PR with git safety |
-| `/verify` | Honest verify gate |
-| `/research` | Deep research (SearXNG + agents) |
-| `/critique` | Adversarial review of your idea (no sycophancy) |
-| `/retro` | Lessons from past sessions → improvement list |
-| `/security-review` | Exploitability-focused review of the diff |
-| `/simplify` | Quality cleanup of the changed code (4 angles) |
-| `/audit` | Over-engineering + slop audit (read-only list) |
-| `/docs` | AI documentation (.ai-docs, compact, context-cheap) |
-| `/design` | DESIGN.md design system (awesome-design-md references) |
-| `/test-ui` | UI tests via the webapp-testing skill |
-| `/study` | Deeply understand an external repo |
-| `/skill` | Load a skill from the curated index |
-| `/graph` | graphify code graph |
-| `/ci` | Check / create CI |
-| `/danger` | Danger mode setup (sudo, safety rules) |
-| `/usage` | Session cost/context report |
-| `/orchestrate` | Run the headless driver |
-
-## Options
-
-```json
-{
-  "stateDir": ".bulba",
-  "docsDir": ".ai-docs",
-  "maxRounds": 5,
-  "awayMaxRounds": 50,
-  "stallRounds": 3,
-  "idleDelayMs": 30000,
-  "memoryMaxBytes": 4096,
-  "indexMaxBytes": 1000,
-  "maxQuestions": 5,
-  "searxngUrl": "http://localhost:8080",
-  "maxQueries": 6,
-  "maxPages": 8,
-  "memoryNudgeEvery": 10,
-  "autoSummarizeEvery": 20,
-  "designMdDir": "",
-  "skillsDir": "",
-  "driverPath": "",
-  "guard": true,
-  "strictMode": false,
-  "dangerMode": false,
-  "defaultAgent": false,
-  "commands": true,
-  "rules": true,
-  "agents": true,
-  "slopCheck": true,
-  "blockPythonEdits": true,
-  "awayAutoApprove": true
-}
-```
-
-## Driver
-
-```bash
-bun bulba-driver.mjs <project-dir> --task "<task>" \
-  [--opencode <bin>] [--cli opencode|claude|codex] \
-  [--max-rounds N] [--parallel N] [--sandbox systemd|bwrap] \
-  [--mem MB] [--cpu %] [--session-timeout s]
-```
-
-Runs the MEA loop headless: plan → implement (worker pool, one worktree per task, task dependencies) → audit (structured verdicts, snapshot guard) → review → verify → report. Resume-safe (state in `.bulba/driver.json`), every session has a timeout, sandboxes limit resources (cgroups) or isolate the filesystem (bwrap, no network).
-
-## Security
-
-- **No telemetry, no network calls** from the plugin itself (research uses your local SearXNG or the agent's webfetch).
-- **Skillfinder** never installs web-fetched skills without your explicit consent; never downloads or runs executables.
-- **Danger mode** keeps the sudo password invisible to the model and out of the chat.
-- The plugin **cannot** be tricked into destructive git commands (denied at the permission level).
-- All state lives in `.bulba/` (auto-gitignored) — inspect anything, delete anything.
-
-## Development
-
-```bash
-bun install
-bun test bulba.test.ts bulba-driver.test.ts   # 52 tests
-```
-
-## License
-
-MIT
+User-invoked-only skills (`grill-me`, `to-spec`, `blast-radius`, `teach`) carry `metadata.opencode/autoinvoke: false`; `unslop` stays model-visible. Slash entries for `teach` and `ponytail*` belong to the command files (`slash: false` on those skills).
